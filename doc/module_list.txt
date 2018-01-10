@@ -1,0 +1,26 @@
+# Skip: These are the modules to NOT make documentation for. Modules which already have documentation are likewise skipped
+arrtest
+comment_first_line
+curvefitting
+diffusivity_calc
+diffusivity_harmonic_calc
+experiment_kitaev_chern_class
+ffmpeg
+gyro_meanfield
+haldane_fluxes
+haldane_model
+kitaev_chern_calc_experimental_script
+kitaev_chern_calc
+kitaev_experiment_functions
+marchmeeting_lattice
+plot_chern_edgelocalization
+plot_chern_honeycomb_transition_hexagonal
+pull_hdf5_chern
+remove_params_regs
+script*
+test_com
+test
+testing_arr
+poly_editor
+__init__
+example
