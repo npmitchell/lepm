@@ -35,12 +35,14 @@ def dset_in_hdf5(dset_name, hdf5fn):
 
 
 def extract_dset_hdf5(dset_name, hdf5fn):
-    """
+    """Load dataset from hdf5 file
 
     Parameters
     ----------
     dset_name : str
+        the string specifier (key) for the dataset to load
     hdf5fn : str
+        the path to the hdf5 file on which data is saved
 
     Returns
     -------
@@ -60,14 +62,20 @@ def extract_dset_hdf5(dset_name, hdf5fn):
 
 
 def save_dset_hdf5(dset, dset_name, hdf5fn, overwrite=False, dtype=None):
-    """
+    """Save dataset to an hdf5 file
 
     Parameters
     ----------
-    dset_name
-    hdf5fn
+    dset : data of some type compatible with hdf5 (ex, numpy array)
+        the data to save as a dataset
+    dset_name : str
+        the key to use to name the dataset in the hdf5 file
+    hdf5fn : str
+        the hdf5 filename in which to save the data
     overwrite : bool
         Overwrite the dataset even if it exists in the file already
+    dtype : str specifier, protected type, or None
+        the data format to use in saving the data dset as a dataset
 
     Returns
     -------

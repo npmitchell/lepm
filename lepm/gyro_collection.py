@@ -37,6 +37,7 @@ class GyroCollection:
     Attributes
     ----------
     self.gyro_lattices : list of instances of gyro_lattice_class.GyroLattice() corresponding to each network
+    self.meshfns: list of strings
     self.physics : dict, containing dos_collection, chern_collection
     """
     def __init__(self):
@@ -132,6 +133,7 @@ class GyroCollection:
         #     !!!!!!! CONTINUE HERE !!!!!
         #     todo
         #     self.gyro_lattices.append()
+        raise RuntimeError('for now, use ensure_all_gyro_lattices() instead')
         pass
 
     def load_eigvals(self, save_eigvals=False):
@@ -180,7 +182,12 @@ class GyroCollection:
         for ii in range(len(self.meshfns)):
             meshfn = self.meshfns[ii]
             if isinstance(meshfn, list):
-                meshfn = meshfn[0]
+                try:
+                    meshfn = meshfn[0]
+                except IndexError:
+                    print 'self.meshfns = ', self.meshfns
+                    print 'meshfn = ', meshfn
+                    raise IndexError('list index out of range')
             print 'Ensuring ', meshfn
             try:
                 self.gyro_lattices[ii]
@@ -697,7 +704,7 @@ if __name__ == '__main__':
     
     theta = args.theta
     eta = args.eta
-    transpose_lattice=0
+    transpose_lattice = 0
     
     make_slit = args.make_slit
     # deformed kagome params

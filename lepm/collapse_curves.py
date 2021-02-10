@@ -197,7 +197,7 @@ def get_bounds_finsz_fixed_xc(xx, xmin, xmax, sz, sz0, xc, check=False):
 
 
 def minimize_variance_curves_fixed_xc(p0, xx, yy, sz, sz0, xmin, xmax, xc, apply_bounds=True, order=1, check=False,
-                                      view=False, pausetime=0.2):
+                                      view=False, pausetime=0.2, mindx_frac=0.05, maxdx_frac=0.2):
     """Optimize finite scaling formula for known critical pt
 
     Parameters
@@ -207,12 +207,19 @@ def minimize_variance_curves_fixed_xc(p0, xx, yy, sz, sz0, xmin, xmax, xc, apply
     yy
     sz
     sz0
-    xmin
-    xmax
+    xmin :
+        minimum value of x over which to compute variance in curves, and also over which to
+        examine curvature of sum of squared residuals
+    xmax :
+        maximum value of x over which to compute variance in curves, and also over which to
+        examine curvature of sum of squared residuals
     xc
     bounds : sequence, optional
         Bounds for variables: (min, max) pairs for each element in x, defining the bounds on that parameter.
         Use None for one of min or max when there is no bound in that direction.
+    mindx_frac : float
+    maxdx_frac : float
+        maximum range of interval (xmin, xmax) on which to fit residuals the quadratic....?
 
     Returns
     -------
@@ -239,7 +246,7 @@ def minimize_variance_curves_fixed_xc(p0, xx, yy, sz, sz0, xmin, xmax, xc, apply
                 plt.pause(pausetime)
             plt.clf()
 
-            # Show bounds
+            # Show result of rescaling by nu in bounds of nu
             xrescale = finsz_fixed_xc(bounds[0], xx, sz, sz0, xc)
             for ii in range(len(xx)):
                 plt.plot(xrescale[ii], yy[ii], '-', color=colors[ii], label='sz = ' + str(sz[ii]))
@@ -269,31 +276,168 @@ def minimize_variance_curves_fixed_xc(p0, xx, yy, sz, sz0, xmin, xmax, xc, apply
     result = minimize(variance_finsz_fixed_xc, p0, args=(xx, yy, sz, sz0, xmin, xmax, xc, order, False),
                       method='L-BFGS-B', bounds=(bounds,), options={'disp': False})
 
-    # Save resulting minimum value of nu
-    nustar = result.x
+    # Save resulting optimized value of nu
+    nustar = result.x[0]
 
     # Estimate error
     # Resulting minimized error
     xrescale = finsz_fixed_xc(nustar, xx, sz, sz0, xc)
     var_min = variance_curves(xrescale, yy, xmin, xmax, order=1, check=False)
-    mindx_frac = 0.01
-    maxdx_frac = 0.10
     uncs, errs = nu_error_asymptotic_parabolas(xx, yy, sz, sz0, xc, nustar, xmin, xmax, mindx_frac, maxdx_frac, 10,
                                                var_min, check=check, view=view)
 
-    # Pick uncertainty with lowest covariance (ie the one that fits the curve best)
-    # Weight the uncertainty by the errors
+    # print 'errs = ', errs
+    # sys.exit()
+    # # Pick uncertainty with lowest covariance (ie the one that fits the curve best)
     # unc = uncs[np.argmin(errs)]
+    # Weight the uncertainty by the errors
     unc = np.sum(uncs / errs) / np.sum(1. / errs)
 
     # Fit uncertainties to a line and extrapolate to zero
     # pp = np.polyfit(np.linspace(mindx_frac, maxdx_frac, 10), uncs, 1)
     # unc = pp[1]
+
+    if check:
+        xrescale = finsz_fixed_xc(nustar, xx, sz, sz0, xc)
+        for ii in range(len(xx)):
+            plt.plot(xrescale[ii], yy[ii], '-', color=colors[ii], label='sz = ' + str(sz[ii]))
+        ylims = plt.gca().get_ylim()
+        plt.plot([xmin, xmin], [ylims[0], ylims[1]], 'k--')
+        plt.plot([xmax, xmax], [ylims[0], ylims[1]], 'k--')
+        print 'xc = ', xc
+        print 'nustar = ', nustar
+        plt.title('This is the result of optimization for ' + r'$\nu$ with fixed $x_c$: ' +
+                  r'$\nu = $' + '{0:0.3f} for '.format(nustar) +
+                  r'$x_c =$' + '{0:0.3f}'.format(xc))
+        plt.legend()
+        plt.show()
+
     return nustar, unc
 
 
+def minimize_variance_curves_fixed_nu(p0, xx, yy, sz, sz0, xmin, xmax, nu, apply_bounds=True, order=1, check=False,
+                                      view=False, pausetime=0.2, mindx_frac=0.05, maxdx_frac=0.2):
+    """Optimize finite scaling formula for known critical exponent
+
+    Parameters
+    ----------
+    p0
+    xx
+    yy
+    sz
+    sz0
+    xmin :
+        minimum value of x over which to compute variance in curves, and also over which to
+        examine curvature of sum of squared residuals
+    xmax :
+        maximum value of x over which to compute variance in curves, and also over which to
+        examine curvature of sum of squared residuals
+    xc
+    bounds : sequence, optional
+        Bounds for variables: (min, max) pairs for each element in x, defining the bounds on that parameter.
+        Use None for one of min or max when there is no bound in that direction.
+    mindx_frac : float
+    maxdx_frac : float
+        maximum range of interval (xmin, xmax) on which to fit residuals the quadratic....?
+
+    Returns
+    -------
+    xcstar, uncertainty
+    """
+    if apply_bounds:
+        # Decide on bounds for minimization using the finite size scaling formula to get the bounds of the fit
+        bounds = get_bounds_finsz_fixed_xc(xx, xmin, xmax, sz, sz0, p0[0], check=check)
+        print 'bounds = ', bounds
+        bounds = (bounds[0] + 1e-7 * bounds[0], bounds[1])
+
+        if check or view:
+            plt.clf()
+            # Check out initial data
+            colors = plt.get_cmap('copper')(np.linspace(0., 1., len(xx)))
+            for ii in range(len(xx)):
+                plt.plot(xx[ii], yy[ii], '-', color=colors[ii], label='sz = ' + str(sz[ii]))
+
+            plt.title('Initial uncollapsed data')
+            plt.legend()
+            if check:
+                plt.show()
+            else:
+                plt.pause(pausetime)
+            plt.clf()
+
+            # Show result of rescaling by nu in bounds of nu
+            xrescale = finsz_fixed_xc(bounds[0], xx, sz, sz0, xc)
+            for ii in range(len(xx)):
+                plt.plot(xrescale[ii], yy[ii], '-', color=colors[ii], label='sz = ' + str(sz[ii]))
+            plt.title(r'Lower bound for $x \in ($' + '{0:0.3f}'.format(xmin) + ',' +
+                      '{0:0.3f}'.format(xmax) + r'$)$: $\nu = $' + str(bounds[0]))
+            plt.legend()
+            if check:
+                plt.show()
+            else:
+                plt.pause(pausetime)
+            plt.clf()
+            if bounds[1] is not None:
+                xrescale = finsz_fixed_xc(bounds[1], xx, sz, sz0, xc)
+                for ii in range(len(xx)):
+                    plt.plot(xrescale[ii], yy[ii], '-', color=colors[ii], label='sz = ' + str(sz[ii]))
+                plt.title(r'Upper bound for $x \in ($' + '{0:0.3f}'.format(xmin) + ',' +
+                          '{0:0.3f}'.format(xmax) + r'$)$: $\nu = $' + str(bounds[1]))
+                plt.legend()
+                if check:
+                    plt.show()
+                else:
+                    plt.pause(pausetime)
+                plt.clf()
+    else:
+        bounds = (None, None)
+
+    result = minimize(variance_finsz_fixed_nu, p0, args=(xx, yy, sz, sz0, xmin, xmax, nu, order, False),
+                      method='L-BFGS-B', bounds=(bounds,), options={'disp': False})
+
+    # Save resulting optimized value of nu
+    xcstar = result.x[0]
+
+    # Estimate error
+    # Resulting minimized error
+    xrescale = finsz_fixed_xc(nu, xx, sz, sz0, xcstar)
+    var_min = variance_curves(xrescale, yy, xmin, xmax, order=1, check=False)
+    uncs, errs = xc_error_asymptotic_parabolas(xx, yy, sz, sz0, xcstar, nu, xmin, xmax, mindx_frac, maxdx_frac, 10,
+                                               var_min, check=check, view=view)
+
+    # print 'errs = ', errs
+    # sys.exit()
+    # # Pick uncertainty with lowest covariance (ie the one that fits the curve best)
+    # unc = uncs[np.argmin(errs)]
+    # Weight the uncertainty by the errors
+    print('collapse_curves: uncertainties = ', uncs)
+    unc = np.sum(uncs / errs) / np.sum(1. / errs)
+
+    # Fit uncertainties to a line and extrapolate to zero
+    # pp = np.polyfit(np.linspace(mindx_frac, maxdx_frac, 10), uncs, 1)
+    # unc = pp[1]
+
+    if check:
+        xrescale = finsz_fixed_xc(nu, xx, sz, sz0, xcstar)
+        for ii in range(len(xx)):
+            plt.plot(xrescale[ii], yy[ii], '-', color=colors[ii], label='sz = ' + str(sz[ii]))
+        ylims = plt.gca().get_ylim()
+        plt.plot([xmin, xmin], [ylims[0], ylims[1]], 'k--')
+        plt.plot([xmax, xmax], [ylims[0], ylims[1]], 'k--')
+        print 'xc = ', xc
+        print 'nustar = ', nustar
+        plt.title('This is the result of optimization for ' + r'$\nu$ with fixed $x_c$: ' +
+                  r'$\nu = $' + '{0:0.3f} for '.format(nustar) +
+                  r'$x_c =$' + '{0:0.3f}'.format(xc))
+        plt.legend()
+        plt.show()
+
+    return xcstar, unc
+
+
 def minimize_variance_curves(p0, xx, yy, sz, sz0, deltax, apply_bounds=True, xcbounds=None,
-                             order=1, check=False, view=False):
+                             order=1, check=False, view=False, mindx_frac=0.05, maxdx_frac=0.2,
+                             mindnu_frac=0.05, maxdnu_frac=0.2):
     """Optimize finite scaling formula for known critical pt and transition position. Here both the transition
     coordinate xc and the scaling exponent nu are optimized. Applying bounds uses the initial guess for xc to determine
     the limits of the optimization. If an error is returned because the optimal nustar was on a bounded value, then
@@ -312,9 +456,12 @@ def minimize_variance_curves(p0, xx, yy, sz, sz0, deltax, apply_bounds=True, xcb
     sz0 : float
         The reference system size which is unaffected by the scaling
     deltax : float
-        Width of the optimization window around xc -- ie optimization window is (xc - delta * 0.5, xc + delta * 0.5)
+        Width of the optimization window around xc -- ie optimization window is (xc - delta * 0.5, xc + delta * 0.5).
+        If apply_bounds is true and xcbounds is given, then deltax acts as the window over which to find the radius of
+        curvature of the sum of squared residuals to get an error measurement for the fit.
     apply_bounds : bool
-        Whether to apply boundaries from limits of data to the fitting parameters
+        Whether to apply boundaries from limits of data to the fitting parameters (in particular, to nu, the scaling
+        exponent)
     xcbounds : tuple of two floats or None
         If apply_bounds is True, xcbounds gives extremal values for xcbounds rather than using the default of
         (p0[0] - deltax * 0.5, p0[0] + deltax * 0.5)
@@ -326,6 +473,7 @@ def minimize_variance_curves(p0, xx, yy, sz, sz0, deltax, apply_bounds=True, xcb
     -------
     nustar, uncertainty
     """
+    view = True
     # guess the max and min of the range that is to be collapsed
     xmin_guess = p0[0] - deltax * 0.5
     xmax_guess = p0[0] + deltax * 0.5
@@ -333,7 +481,7 @@ def minimize_variance_curves(p0, xx, yy, sz, sz0, deltax, apply_bounds=True, xcb
         # Decide on bounds for minimization using the finite size scaling formula to get the bounds of the fit
         bounds = get_bounds_finsz_fixed_xc(xx, xmin_guess, xmax_guess, sz, sz0, p0[0], check=check)
         print 'bounds = ', bounds
-        bounds = (bounds[0] + 1e-7 * bounds[0], bounds[1])
+        bounds = (bounds[0] * (1+ 1e-7), bounds[1])
 
         if check:
             # Check out initial data
@@ -351,8 +499,11 @@ def minimize_variance_curves(p0, xx, yy, sz, sz0, deltax, apply_bounds=True, xcb
                 plt.plot(xrescale[ii], yy[ii], '-', color=colors[ii], label='sz = ' + str(sz[ii]))
             ylims = plt.gca().get_ylim()
             plt.plot([xmin_guess, xmin_guess], [ylims[0], ylims[1]], 'k--')
-            plt.title(r'Lower bound for $x \in ($' + '{0:0.3f}'.format(xmin_guess) + ',' +
-                      '{0:0.3f}'.format(xmax_guess) + r'$)$: $\nu = $' + str(bounds[0]))
+            plt.plot([xmax_guess, xmax_guess], [ylims[0], ylims[1]], 'k--')
+            plt.title('This is the result of optimization after \napplying the lower bound for ' + r'$\nu$: ' +
+                      r'$\nu = $' + '{0:0.3f} for '.format(bounds[0]) +
+                      r'$x \in ($' + '{0:0.3f}'.format(xmin_guess) + ',' +
+                      '{0:0.3f}'.format(xmax_guess) + r'$)$')
             plt.legend()
             plt.show()
             if bounds[1] is not None:
@@ -361,6 +512,7 @@ def minimize_variance_curves(p0, xx, yy, sz, sz0, deltax, apply_bounds=True, xcb
                     plt.plot(xrescale[ii], yy[ii], '-', color=colors[ii], label='sz = ' + str(sz[ii]))
                 ylims = plt.gca().get_ylim()
                 plt.plot([xmin_guess, xmin_guess], [ylims[0], ylims[1]], 'k--')
+                plt.plot([xmax_guess, xmax_guess], [ylims[0], ylims[1]], 'k--')
                 plt.title(r'Upper bound for $x \in ($' + '{0:0.3f}'.format(xmin) + ',' +
                           '{0:0.3f}'.format(xmax) + r'$)$: $\nu = $' + str(bounds[1]))
                 plt.legend()
@@ -372,7 +524,7 @@ def minimize_variance_curves(p0, xx, yy, sz, sz0, deltax, apply_bounds=True, xcb
         xcbounds = (None, None)
 
     result = minimize(variance_finsz, p0, args=(xx, yy, sz, sz0, deltax, order, False),
-                      method='L-BFGS-B', bounds=(xcbounds, bounds,), options={'disp': False})
+                      method='L-BFGS-B', bounds=(xcbounds, bounds,), options={'disp': True})
 
     # Save resulting minimum value of nu
     xcstar, nustar = result.x
@@ -383,13 +535,9 @@ def minimize_variance_curves(p0, xx, yy, sz, sz0, deltax, apply_bounds=True, xcb
     # Resulting minimized error in nu
     xrescale = finsz_fixed_xc(nustar, xx, sz, sz0, xcstar)
     var_min = variance_curves(xrescale, yy, xmin, xmax, order=1, check=False)
-    mindnu_frac = 0.01
-    maxdnu_frac = 0.10
     nu_uncs, nu_errs = nu_error_asymptotic_parabolas(xx, yy, sz, sz0, xcstar, nustar, xmin, xmax, mindnu_frac,
                                                      maxdnu_frac, 10, var_min, check=check, view=view)
 
-    mindxc_frac = 0.01
-    maxdxc_frac = 0.10
     xc_uncs, xc_errs = xc_error_asymptotic_parabolas(xx, yy, sz, sz0, xcstar, nustar, xmin, xmax, mindxc_frac,
                                                      maxdxc_frac, 10, var_min, check=check, view=view)
 
@@ -401,6 +549,20 @@ def minimize_variance_curves(p0, xx, yy, sz, sz0, deltax, apply_bounds=True, xcb
     # Fit uncertainties to a line and extrapolate to zero
     # pp = np.polyfit(np.linspace(mindx_frac, maxdx_frac, 10), uncs, 1)
     # unc = pp[1]
+
+    if check:
+        xrescale = finsz_fixed_xc(nustar, xx, sz, sz0, xcstar)
+        for ii in range(len(xx)):
+            plt.plot(xrescale[ii], yy[ii], '-', color=colors[ii], label='sz = ' + str(sz[ii]))
+        ylims = plt.gca().get_ylim()
+        plt.plot([xmin_guess, xmin_guess], [ylims[0], ylims[1]], 'k--')
+        plt.plot([xmax_guess, xmax_guess], [ylims[0], ylims[1]], 'k--')
+        plt.title('This is the result of optimization for ' + r'$x_c, \nu$: ' +
+                  r'$\nu = $' + '{0:0.3f} for '.format(nustar) +
+                  r'$x_c =$' + '{0:0.3f}'.format(xcstar) + r'$)$')
+        plt.legend()
+        plt.show()
+
     return xcstar, nustar, unc_nu, unc_xc
 
 
@@ -409,6 +571,12 @@ def minimize_variance_curves(p0, xx, yy, sz, sz0, deltax, apply_bounds=True, xcb
 ############################################################
 def variance_finsz_fixed_xc(pp, xx, yy, sz, sz0, xmin, xmax, xc, order, check):
     xrescale = finsz_fixed_xc(pp[0], xx, sz, sz0, xc)
+    res = variance_curves(xrescale, yy, xmin, xmax, order=order, check=check)
+    return res
+
+
+def variance_finsz_fixed_nu(pp, xx, yy, sz, sz0, xmin, xmax, nu, order, check):
+    xrescale = finsz_fixed_xc(nu, xx, sz, sz0, pp[0])
     res = variance_curves(xrescale, yy, xmin, xmax, order=order, check=check)
     return res
 
@@ -437,8 +605,10 @@ def variance_finsz(pp, xx, yy, sz, sz0, deltax, order, check):
     return res
 
 
-def variance_curves(xx, yy, xmin, xmax, order=1, check=False):
-    """Note that yy[ii] must be a (single-valued) function of xx[ii] for this to be useful.
+def variance_curves(xx, yy, xmin, xmax, order=1, check=False, nsamples=100):
+    """Sum the variance of interpolated curves (xx[ii, yy[ii]) over a sampling from xmin to xmax, for each curve
+    (xx[ii], yy[ii]) in xx and yy.
+    Note that yy[ii] must be a (single-valued) function of xx[ii] for this to be useful.
 
     Parameters
     ----------
@@ -454,7 +624,7 @@ def variance_curves(xx, yy, xmin, xmax, order=1, check=False):
     Returns
     -------
     res : float
-        The variance of the curves
+        The nanmean of the variance of the curves over the given interval
     """
     # Determine if all the data curves are the same length (have same #pts)
     if isinstance(xx, np.ndarray) and isinstance(yy, np.ndarray):
@@ -465,8 +635,11 @@ def variance_curves(xx, yy, xmin, xmax, order=1, check=False):
         else:
             same_length = False
 
+    if check:
+        print 'collapse_curves.py: same_length = ', same_length
+
     # Interpolate the curves
-    xnew = np.linspace(xmin, xmax, 100)
+    xnew = np.linspace(xmin, xmax, nsamples)
     fv = np.zeros((len(xx), len(xnew)), dtype=float)
     ii = 0
     for xii in xx:
@@ -490,16 +663,115 @@ def variance_curves(xx, yy, xmin, xmax, order=1, check=False):
         ii += 1
 
     # Compute residuals based on output
-    res = np.sum(np.std(fv, axis=0))
+    res = np.nanmean(np.var(fv, axis=0))
     if check:
         for fvii in fv:
             plt.plot(xnew, fvii, '-')
 
-        plt.title('residuals = ' + str(res))
-        plt.pause(0.1)
+        plt.title('average variance = ' + str(res))
+        print 'fv = ', fv
+        print 'np.shape(fv) = ', np.shape(fv)
+        print 'var(fv, axis=0) = ', np.var(fv, axis=0)
+        print 'var(fv, axis=1) = ', np.var(fv, axis=1)
+        print 'np.sum(std(fv), axis=0) = ', np.sum(np.var(fv), axis=0)
+        print 'np.sum(std(fv, axis=0)) = ', np.sum(np.var(fv, axis=0))
+        plt.show()
         plt.clf()
 
     return res
+
+
+def chisquared_curves(xx, yy, uncertainties, xmin, xmax, order=1, check=False, nsamples=100, eps=1e-14, replace_zeros=False):
+    """Sum the difference from mean of interpolated curves (xx[ii, yy[ii]) over a sampling from xmin to xmax,
+    for each curve (xx[ii], yy[ii]) in xx and yy. Divide by uncertainty at each point on curve.
+    Note that yy[ii] must be a (single-valued) function of xx[ii] for this to be useful, for all ii.
+
+    Parameters
+    ----------
+    xx : list of N float arrays (of possible variable length) or N x M float array
+        The parameter that is varying across the phase boundary, spanning the domain of the data for each curve
+    yy : list of N float arrays (of possible variable length) or N x M float array
+        y coords for N curves with M points each (possibly variable #pts in each curve)
+    xmin : float
+        The lower bound for the domain that is to be collapsed
+    xmax : float
+        The upper bound for the domain that is to be collapsed
+
+    Returns
+    -------
+    res : float
+        The nanmean of the variance of the curves over the given interval
+    """
+    # Determine if all the data curves are the same length (have same #pts)
+    if isinstance(xx, np.ndarray) and isinstance(yy, np.ndarray):
+        same_length = True
+    else:
+        if all(len(i) == len(xx[0]) for i in xx) and all(len(i) == len(yy[0]) for i in yy):
+            same_length = True
+        else:
+            same_length = False
+
+    if check:
+        print 'collapse_curves.py: same_length = ', same_length
+
+    # Interpolate the curves
+    xnew = np.linspace(xmin, xmax, nsamples)
+    fv = np.zeros((len(xx), len(xnew)), dtype=float)
+    ii = 0
+    for xii in xx:
+        # check that yy is a single valued function of xx by checking to see if there are duplicates in xx
+        if len(xii) > len(np.unique(xii)):
+            raise RuntimeError('Found duplicates in row ' + str(ii) + ' of xx. ' +
+                               'yy should be a single valued function of xx for the residual ' +
+                               'function to be helpful.')
+
+        # For some reason interp1d doesn't let me use extrapolate for fill_values...
+        # ff = interpolate.interp1d(xii, yy[ii], fill_value="extrapolate")
+        # print 'xii = ', xii
+        # print 'yy[ii] = ', yy[ii]
+        ff = InterpolatedUnivariateSpline(xii, yy[ii], k=order)
+        # plt.plot(xii, ff(xx[ii]), 'k.-')
+        # plt.plot(xii, yy[ii], 'ro')
+        # plt.show()
+        # print 'ff = ', ff
+        # print 'ff(', np.median(xnew), ')= ', ff(0.95)
+        fv[ii] = ff(xnew)
+        ii += 1
+
+    # Compute residuals based on output
+    meancurv = np.mean(fv, axis=0)
+    meaninterp = InterpolatedUnivariateSpline(xnew, meancurv, k=order)
+
+    # Now for each observation point, query the distance from the mean curv
+    num = 0
+    chisq = 0
+    for (xii, yii, uii) in zip(xx, yy, uncertainties):
+        if replace_zeros:
+            inds = np.where(np.logical_and(xii > xmin, xii < xmax))[0]
+            uii[np.where(uii < eps)[0]] = np.min(uii[uii > eps])
+        else:
+            inds = np.where(np.logical_and(np.logical_and(xii > xmin, xii < xmax), uii > eps))[0]
+        # print(inds)
+        # print(np.shape(xii[inds]))
+        print('uncertainty = ' + str(uii[inds]**2))
+        chisq += np.sum((yii[inds] - meaninterp(xii[inds])) ** 2 / (uii[inds]**2))
+        print(chisq)
+        num += np.size(inds)
+
+    if check:
+        # print(fv)
+        plt.plot(xnew, meancurv, 'k.')
+        for (fvii, ii) in zip(fv, range(len(fv))):
+            plt.plot(xnew, fvii, '--')
+            plt.plot(xx[ii], yy[ii], 'o')
+
+        # print 'fv = ', fv
+        # print 'np.shape(fv) = ', np.shape(fv)
+        plt.title('num=' + str(num) + ' chisq=' + str(chisq))
+        plt.pause(0.00001)
+        plt.clf()
+
+    return chisq, num
 
 
 ###################################################################################################
@@ -509,7 +781,7 @@ def nu_error_asymptotic_parabolas(xx, yy,  sz, sz0, xcstar, nustar, xmin, xmax, 
                                   var_min, check=False, view=False, pausetime=0.2):
     """Fit the radius of curvature at xc of the curve yy(xx). Do this nevals times for different domain widths (from
     minrange to maxrange) of xx near xc with initial guesses for fit params p0=(p[0], p[1]).
-    Note that in the code for this function unc refers to
+    Note that in the code for this function unc refers to uncertainty from fitting residuals to a quadratic
 
     Parameters
     ----------
@@ -847,7 +1119,7 @@ def plot_param_vs_range(range_arr, nu, nu_err, xc, xc_err=None, ax=None, figlabs
     return ax
 
 
-def plot_curve_collapse_sequence(range_arr, xx, yy, sz, sz0, nulist, xclist, ax=None, figlabs=None, outname=None,
+def  plot_curve_collapse_sequence(range_arr, xx, yy, sz, sz0, nulist, xclist, ax=None, figlabs=None, outname=None,
                                  dpi=300, show=False, **kwargs):
     """Plot collections of  collapsed curves with curves colored by the width of the optimization window, xi, given
     the value of rescaling exponent, nu, and the critical value of x at which the phase changes, xc.
@@ -929,6 +1201,36 @@ def plot_curve_collapse_sequence(range_arr, xx, yy, sz, sz0, nulist, xclist, ax=
 
 
 if __name__ == "__main__":
+    #########################################################################
+    # Check variance of curves
+    #########################################################################
+    xx, yy = [], []
+    for lng in [3, 6, 9]:
+        xx.append(np.linspace(0, 1, lng))
+        yy.append(np.linspace(0, lng, lng))
+
+    out = variance_curves(xx, yy, xmin=0.0, xmax=0.2)
+    print 'out = ', out
+    out = variance_curves(xx, yy, xmin=0.2, xmax=0.4)
+    print 'out = ', out
+    out = variance_curves(xx, yy, xmin=0.4, xmax=0.6)
+    print 'out = ', out
+    out = variance_curves(xx, yy, xmin=0.6, xmax=0.8)
+    print 'out = ', out
+    out = variance_curves(xx, yy, xmin=0.8, xmax=1.0)
+    print 'out = ', out
+    out = variance_curves(xx, yy, xmin=0., xmax=1.)
+    print 'out = ', out
+    sys.exit()
+
+    xx, yy = [], []
+    for lng in [3, 6, 9]:
+        xx.append(np.linspace(0, 1, lng))
+        yy.append(lng * np.ones(lng))
+
+    out = variance_curves(xx, yy, xmin=0, xmax=1., check=True)
+    print 'out = ', out
+
     #########################################################################
     # Collapsing 3 curves with same # data pts in each -- Fermi Functions
     #########################################################################

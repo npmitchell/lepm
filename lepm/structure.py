@@ -724,17 +724,15 @@ def calc_structure_factor_2d(xy, LL, klim=None, nksteps=50, outdir=None, no_cros
     nocrosshairs : bool
         if True, attempts to subtract off the crosshairs near k=0 in the region |k|<2*pi and saves (but does not return)
          results
-        
+
     Returns
     -----------
     kx, ky : N_kx x N_ky float arrays
         wavevectors in x,y sampled by Skmesh
     Skmesh : N_kx x N_ky float arrays
         Structure factor computed over mesh kx,ky
-    kr : N x 1 float array
-        radial wavevectors
-    Skr : N x 1 float array
-        Structure factor averaged over magnitude of wavevectors
+    Sk : N_kx * N_ky x 1 float array
+        the structure
     """
     if outdir is not None:
         infodir = outdir
@@ -792,7 +790,7 @@ def calc_structure_factor_2d(xy, LL, klim=None, nksteps=50, outdir=None, no_cros
         ax.axis('equal')
         titlestr = r'$S(\mathbf{k})$ with system size='+'({0:0.3f}'.format(LL[0])+', {0:0.3f}'.format(LL[1])+')'
         plt.title(titlestr)
-        plt.savefig(infodir+'Sk.png')
+        plt.savefig(infodir + 'Sk.png')
     
         # # Save log heatmap of S(k)
         # plt.clf()

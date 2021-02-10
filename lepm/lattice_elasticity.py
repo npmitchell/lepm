@@ -52,10 +52,10 @@ Common Variables
 ================
 xy : N x 2 float array
     2D positions of points (positions x,y). Row i is the x,y position of the ith particle.
-NL : array of dimension #pts x max(#neighbors)
+NL : #pts x max(#neighbors) int array
     The ith row contains indices for the neighbors for the ith point, buffered by zeros if a particle does not have the
     maximum # nearest neighbors. KL can be used to discriminate a true 0-index neighbor from a buffered zero.
-KL : NP x max(#neighbors) int array
+KL : #pts x max(#neighbors) int array
     spring connection/constant list, where 1 corresponds to a true connection,
     0 signifies that there is not a connection, -1 signifies periodic bond
 BM : array of length #pts x max(#neighbors)
@@ -1618,7 +1618,7 @@ def normal_modes_gHST(R, NL, KL, params, dispersion=[], spin_dir=[], sublattice_
     return matrix
 
 
-def eig_vals_vects(matrix, sort='imag', not_hermitian=False, verbose=False):
+def eig_vals_vects(matrix, sort='imag', not_hermitian=True, verbose=False):
     """
     Finds the eigenvalues and eigenvectors of dynamical matrix.
 
@@ -1649,7 +1649,8 @@ def eig_vals_vects(matrix, sort='imag', not_hermitian=False, verbose=False):
         eigval, eigvect = np.linalg.eig(matrix)
     else:
         if (matrix == matrix.conj().T).all():
-            print 'Shortcut eigvect/vals since matrix is hermitian...'
+            if verbose:
+                print 'Shortcut eigvect/vals since matrix is hermitian...'
             eigval, eigvect = np.linalg.eigh(matrix)
         else:
             if verbose:
@@ -1716,22 +1717,35 @@ def eig_vals_vects_hermitian(matrix, sort='imag'):
 # Functions for handling boundaries
 
 def remove_dangling_points(xy, NL, KL, BL, check=False):
-    """
+    """Remove points from a pointset that are not connected to any other points
 
     Parameters
     ----------
-    xy
-    NL
-    KL
-    BL
+    xy : N x 2 float array
+        the points to prune
+    NL : NP x NN int array
+        Neighbor list. The ith row contains the indices of xy that are the bonded pts to the ith pt.
+        Nonexistent bonds are replaced by zero.
+    KL : NP x NN int array
+        spring connection/constant array, where 1 corresponds to a true connection,
+        0 signifies that there is not a connection, -1 signifies periodic bond
+    BL : #bonds x 2 int array
+        Bond list
+    check : bool
+        output details to command line
 
     Returns
     -------
-
+    dangles :
+    xy :
+    NL :
+    KL :
+    BL :
+    backtrans :
     """
     dangles = np.where(~KL.any(axis=1))[0]
     if len(dangles) > 0:
-        print 'le: extract_boundary: Removing dangling points: dangles = ', dangles
+        print 'le: remove_dangling_points: Removing dangling points: dangles = ', dangles
         if check:
             plt.plot(xy[:, 0], xy[:, 1], 'b.')
             for ii in range(len(xy)):
@@ -1873,6 +1887,11 @@ def extract_boundary(xy, NL, KL, BL, check=False):
 
         nondangles = np.setdiff1d(np.arange(NP), dangles)
         # Note that remove_pts can handle periodic BL
+
+        if len(nondangles) == 0:
+            print 'There are no particles that are not part of dangling bonds. All particles are part of the boundary.'
+            return np.arange(len(xy))
+
         xy, NL, KL, BL, PVxydict = remove_pts(nondangles, xy, BL)
 
         # Remove bonds which were periodic.
@@ -1996,7 +2015,7 @@ def extract_boundary(xy, NL, KL, BL, check=False):
     return boundary
 
 
-def extract_inner_boundary(xy, NL, KL, BL, check=False):
+def extract_inner_boundary(xy, NL, KL, BL, inner_pt=None, check=False):
     """Extract the boundary on the interior of an annular sample or the polygon at the center, and return the indices
     of the particles composing this boundary in clockwise order (note that opposite orientation from outer boundary).
     If there are periodic boundary conditions, this function discards that information.
@@ -2005,14 +2024,17 @@ def extract_inner_boundary(xy, NL, KL, BL, check=False):
     ----------
     xy : NP x 2 float array
         point set in 2D
-    BL : #bonds x 2 int array
-        Bond list
     NL : NP x NN int array
         Neighbor list. The ith row contains the indices of xy that are the bonded pts to the ith pt.
         Nonexistent bonds are replaced by zero.
     KL : NP x NN int array
         Connectivity list. The jth column of the ith row ==1 if pt i is bonded to pt NL[i,j].
         The jth column of the ith row ==0 if pt i is not bonded to point NL[i,j].
+    BL : #bonds x 2 int array
+        Bond list
+    inner_pt : 1 x 2 float array or None
+        A point inside the inner boundary (outside the bulk) that is used to find the inner boundary. If None, (0, 0)
+        is assumed to be inside the inner boundary to be extracted
     check: bool
         Whether to show intermediate results
 
@@ -2021,6 +2043,12 @@ def extract_inner_boundary(xy, NL, KL, BL, check=False):
     boundary : #points on inner boundary x 1 int array
         indices of points living on inner boundary of the network
     """
+    # Center the points around some point that is inside the inner region to be extracted
+    if inner_pt is not None:
+        xy -= inner_pt
+    else:
+        xy -= np.mean(xy, axis=0)
+
     # Clear periodic bonds from KL
     pbonds = np.where(KL.ravel() < 0)[0]
     if len(pbonds) > 0:
@@ -2104,7 +2132,8 @@ def extract_inner_boundary(xy, NL, KL, BL, check=False):
     #     nextIND = neighbors[angles == max(angles)][0]
     #     # print 'nextIND = ', nextIND
 
-    print 'bb = ', bb
+    if check:
+        print 'bb = ', bb
     # sys.exit()
     # as long as we haven't completed the full outer edge/boundary, add nextIND
     while nextIND != rightIND:
@@ -3662,7 +3691,7 @@ def PVxy2PVxynp(PVx, PVy, NL):
     return PVxnp, PVynp
 
 
-def PVxydict2PV(PVxydict, check=False):
+def PVxydict2PV(PVxydict, check=False, periodic_strip=False):
     """Obtain the 2D lattice vectors (PV) from a dictionary of periodic displacements
 
     Parameters
@@ -3690,24 +3719,48 @@ def PVxydict2PV(PVxydict, check=False):
             for row in tmp:
                 pvlist.append(row)
 
-    print 'pvlist = ', pvlist
+    if check:
+        print 'le: pvlist = ', pvlist
     pvarr = np.array(pvlist)
     pvs = dh.unique_rows(pvarr)
     if check:
-        print 'pvs = ', pvs
+        print 'le: pvs = ', pvs
     if len(pvs) > 0:
-        # maxx = np.argmax(pvs[:, 0])
-        # maxy = np.argmax(pvs[:, 1])
+        print 'le: pvs = ', pvs
+        if (pvs[:, 1] < 0).all():
+            pvs[:, 1] = -pvs[:, 1]
+
         minax = np.argmin(np.abs(pvs[:, 0]))
         minay = np.argmin(np.abs(pvs[:, 1]))
         # Order the vectors by x-dominant, y-dominant, with both dominant vector components > 0, ie
         # PV -> [[+Lx, small], [small, +Ly]]
-        PV = np.vstack((pvs[minax], pvs[minay]))
+        if (pvs[:, 1] == pvs[0, 1]).all() and not periodic_strip:
+            print 'le.PVxydict2PV: two lattice vecs have the same Y value, adding them together...'
+            maxx = np.argmax(pvs[:, 0])
+            other = np.setdiff1d([0, 1], [maxx])
+            pvnew = pvs[maxx] - pvs[other]
+            PV = np.vstack((pvnew, pvs[maxx]))
+            print 'le.PVxydict2PV: PV = ', PV
+        elif not periodic_strip:
+            if minax != minay:
+                PV = np.vstack((pvs[minax], pvs[minay]))
+            else:
+                if minay == 0:
+                    other = 1
+                else:
+                    other = 0
+                PV = np.vstack((pvs[minay], pvs[other]))
+        else:
+            print 'le.PVxydict2PV: since periodic_strip, returning single 1 x 2 PV array'
+            PV = pvs
+
         if check:
             print 'le.PVxydict2PV: PV = ', PV
     else:
+        print 'le: No periodic vectors found, returning empty PV array'
         PV = pvs
 
+    print 'le: PVxydict2PV: returning PV'
     return PV
 
 
@@ -3775,6 +3828,10 @@ def PVxydict2PVxPVy(PVxydict, NL, KL, check=False):
             if check:
                 print 'key = ', key
                 print 'NL[key[0]] = ', NL[key[0]]
+                print 'le.PVxydict2PVxPVy: unused[key[0]] = ', unused[key[0]]
+                print 'NL[key[0]] = ', NL[key[0]]
+                print 'KL[key[0]] = ', KL[key[0]]
+
             # Add ii, jj element
             col = np.argwhere(np.logical_and(unused[key[0]],
                                              np.logical_and(NL[key[0]] == key[1], KL[key[0]] < 0)))[0]
@@ -3942,7 +3999,13 @@ def BL2PVxydict(BL, xy, PV):
         # This will be PVxydict[(i,j)], since particle i sees j at xy[j]+PVxydict[(i,j)]
         a1 = xy[np.abs(BL[ind, 0])]
         a2 = xy[np.abs(BL[ind, 1])]
-        distxy = a2 + PVtmp - a1
+        try:
+            distxy = a2 + PVtmp - a1
+        except ValueError:
+            print 'a1 = ', a1
+            print 'a2 = ', a2
+            print 'PVtmp = ', PVtmp
+            raise RuntimeError('dimensions do not match')
         dist = distxy[:, 0] ** 2 + distxy[:, 1] ** 2
         # print 'a1, a2 = ', a1, a2
         # print 'distxy = ', distxy
@@ -4257,9 +4320,11 @@ def boundary_triangles(TRI, boundary):
 
 
 def extract_polygons_lattice(xy, BL, NL=None, KL=None, PVx=None, PVy=None, PVxydict=None, viewmethod=False,
-                             check=False):
+                             check=False, eps=1e-10):
     """ Extract polygons from a lattice of points.
-    Note that dangling bonds are removed, but no points are removed. This allows correct indexing for PVxydict keys, if supplied.
+    Note that dangling bonds are removed, but no points are removed.
+    This allows correct indexing for PVxydict keys, if supplied.
+    This code fails if a site is its own NNN.
 
     Parameters
     ----------
@@ -4286,12 +4351,15 @@ def extract_polygons_lattice(xy, BL, NL=None, KL=None, PVx=None, PVy=None, PVxyd
         View the results of many intermediate steps
     check: bool
         Check the initial and final result
+    eps : float
+        minimum value to consider nonzero in KL
 
     Returns
     ----------
     polygons : list of lists of ints
         list of lists of indices of each polygon
     """
+    viewmethod = True
     NP = len(xy)
 
     if KL is None or NL is None:
@@ -4367,14 +4435,32 @@ def extract_polygons_lattice(xy, BL, NL=None, KL=None, PVx=None, PVy=None, PVxyd
             # print 'len(todoAB) = ', len(todoAB)
             # print 'used = ', used
             # print 'todoAB = ', todoAB
+            # print polygons
             if len(todoAB) > 0:
                 bond = BL[todoAB[0]]
+                # if (bond == [21, 22]).all():
+                #     for todoab in todoAB:
+                #         ax1.plot([xy[BL[todoab, 0], 0], xy[BL[todoab, 1], 0]],
+                #                  [xy[BL[todoab, 0], 1], xy[BL[todoab, 1], 1]], 'b-', lw=3)
+                #     todoBA = np.where(~used[:, 1])[0]
+                #     for todoba in todoBA:
+                #         ax1.plot([xy[BL[todoba, 0], 0], xy[BL[todoba, 1], 0]],
+                #                  [xy[BL[todoba, 0], 1], xy[BL[todoba, 1], 1]], 'g--')
+                #     print 'bond = ', bond
+                #     plt.pause(40)
+                #     sys.exit()
 
                 # bb will be list of polygon indices
                 # Start with orientation going from bond[0] to bond[1]
                 nxt = bond[1]
                 bb = [bond[0], nxt]
                 dmyi = 1
+
+                # Now mark the new bond that has now been added to bb as used
+                # Get index of used matching thisbond
+                mark_used = np.where((np.logical_or(BL == bb[0], BL == bb[1])).all(axis=1))
+                # print 'marking bond [', thisbond, '] as used'
+                used[mark_used, 0] = True
 
                 ###############
                 # check
@@ -4425,10 +4511,11 @@ def extract_polygons_lattice(xy, BL, NL=None, KL=None, PVx=None, PVy=None, PVxyd
                     #
                     ###############
 
-                    # Now mark the current bond as used
-                    thisbond = [bb[dmyi - 1], bb[dmyi]]
+                    # Now mark the new bond that has now been extended (added) as used
+                    thisbond = [bb[dmyi], bb[dmyi + 1]]
                     # Get index of used matching thisbond
-                    mark_used = np.where((np.logical_or(BL == bb[dmyi - 1], BL == bb[dmyi])).all(axis=1))
+                    mark_used = np.where((np.logical_or(BL == bb[dmyi], BL == bb[dmyi + 1])).all(axis=1))
+
                     # mark_used = np.where((BL == thisbond).all(axis=1))
                     if not used[mark_used, 0]:
                         # print 'marking bond [', thisbond, '] as used'
@@ -4467,7 +4554,6 @@ def extract_polygons_lattice(xy, BL, NL=None, KL=None, PVx=None, PVy=None, PVxyd
                 # Check for remaining bonds unused in reverse order (B-->A)
                 # print 'CHECKING REVERSE (B-->A): '
                 todoBA = np.where(~used[:, 1])[0]
-                # print 'len(todoBA) = ', len(todoBA)
                 if len(todoBA) > 0:
                     bond = BL[todoBA[0]]
 
@@ -4489,6 +4575,13 @@ def extract_polygons_lattice(xy, BL, NL=None, KL=None, PVx=None, PVy=None, PVxyd
                     nxt = bond[0]
                     bb = [bond[1], nxt]
                     dmyi = 1
+
+                    # Now mark the new bond that has now been added to bb as used
+                    # Get index of used matching thisbond
+                    thisbond = [bb[dmyi], bb[dmyi - 1]]
+                    mark_used = np.where((BL == thisbond).all(axis=1))
+                    # print 'marking bond [', thisbond, '] as used'
+                    used[mark_used, 1] = True
 
                     # as long as we haven't completed the full outer polygon, add nextIND
                     while nxt != bond[1]:
@@ -4522,14 +4615,15 @@ def extract_polygons_lattice(xy, BL, NL=None, KL=None, PVx=None, PVy=None, PVxyd
                         ###############
 
                         # Now mark the current bond as used --> note the inversion of the bond order to match BL
-                        thisbond = [bb[dmyi], bb[dmyi - 1]]
+                        thisbond = [bb[dmyi + 1], bb[dmyi]]
                         # Get index of used matching [bb[dmyi-1],nxt]
                         mark_used = np.where((BL == thisbond).all(axis=1))
                         if len(mark_used) > 0:
                             used[mark_used, 1] = True
                         else:
-                            raise RuntimeError(
-                                'Cannot mark polygon bond as used: this bond was already used in its attempted orientation. (All bonds in first column should already be marked as used.)')
+                            raise RuntimeError('Cannot mark polygon bond as used: this bond was already used '
+                                               'in its attempted orientation. (All bonds in first column '
+                                               'should already be marked as used.)')
 
                         dmyi += 1
 
@@ -4640,9 +4734,11 @@ def extract_polygons_lattice(xy, BL, NL=None, KL=None, PVx=None, PVy=None, PVxyd
                     ax2.imshow(used, aspect=1. / len(used), interpolation='none')
                     ax1.set_aspect('equal')
                 ###############
+                # define the displacment from the starting point that we have moved so far
+                displ = xy[nxt] - xyb0
 
                 # as long as we haven't completed the full outer polygon, add next index
-                while nxt != bond[0]:
+                while nxt != bond[0] or abs(displ[0]**2 + displ[1]**2) > eps:
                     # print nxt
                     #            o     o neighbors
                     #             \   /
@@ -4659,7 +4755,13 @@ def extract_polygons_lattice(xy, BL, NL=None, KL=None, PVx=None, PVy=None, PVxyd
                         '''The bond is a lone bond, not part of a triangle/polygon.'''
                         neighbors = n_tmp
                     else:
+                        # Remove the current particle from the list of its next nearest neighbors
+                        # Note that we may add this particle back later if bb[dmyi - 1] is its own NNN
                         neighbors = np.delete(n_tmp, np.where(n_tmp == bb[dmyi - 1])[0])
+                        # Here, handle the case where a periodic bond links the neighbor back to the original particle,
+                        # as in the bond linkage of 0-1-0.
+                        if len(neighbors) == 0:
+                            neighbors = n_tmp
 
                     # check if neighbors CAN be connected across periodic bc--
                     #  ie if particle on finite boundary (finbd)
@@ -4667,9 +4769,26 @@ def extract_polygons_lattice(xy, BL, NL=None, KL=None, PVx=None, PVy=None, PVxyd
                         # Since on finite system boundary, particle could have periodic bonds
                         # Find x values to add to neighbors, by first getting indices of row of
                         # PV (same as of NL) matching neighbors
-                        PVinds = [np.argwhere(NL[nxt] == nnn)[0][0] for nnn in neighbors]
+                        # PVinds = [np.argwhere(NL[nxt] == nnn)[0][0] for nnn in neighbors] <--- this assumed no 0-1-0
+                        PVinds = []
+                        for nnn in dh.unique_nosort(neighbors):
+                            okinds = np.ravel(np.argwhere(np.logical_and(NL[nxt] == nnn, np.abs(KL[nxt]) > eps)))
+                            # print 'neighbors = ', neighbors
+                            # print 'okinds = ', okinds
+                            # print 'NL = ', NL
+                            # print 'KL = ', KL
+                            # print NL[nxt] == nnn, np.abs(KL[nxt]) > eps
+                            # print np.argwhere(np.logical_and(NL[nxt] == nnn, np.abs(KL[nxt]) > eps))
+                            for okind in okinds:
+                                PVinds.append(okind)
+
                         addx = PVx[nxt, PVinds]
                         addy = PVy[nxt, PVinds]
+
+                        # print 'nxt = ', nxt
+                        # print 'PVinds', PVinds
+                        # print 'xy[neighbors, :] = ', xy[neighbors, :]
+                        # print 'np.dstack([addx, addy])[0] = ', np.dstack([addx, addy])[0]
 
                         xynb = xy[neighbors, :] + np.dstack([addx, addy])[0]
                         xynxt = xy[nxt, :]
@@ -4694,18 +4813,12 @@ def extract_polygons_lattice(xy, BL, NL=None, KL=None, PVx=None, PVy=None, PVxyd
                         prev_angletmp = np.arctan2(xynxt[1] - xynb[:, 1], xynxt[0] - xynb[:, 0]).ravel()
                         prev_angle = prev_angletmp[angles == max(angles)][0]
 
-                        # print 'prev_angletmp = ', prev_angletmp
-                        # print 'prev_angle = ', prev_angle
-                        # print 'NL[nxt] = ', NL[nxt]
-                        # print 'bb = ', bb
-
                         # CHECK
                         # ax1 = plt.gca()
                         # ax1.plot(xy[:,0],xy[:,1],'k.')
                         # for i in range(len(xy)):
                         #    ax1.text(xy[i,0]+0.2,xy[i,1],str(i))
                         # plt.show()
-
 
                     else:
                         current_angles = np.arctan2(xy[neighbors, 1] - xy[nxt, 1],
@@ -4720,9 +4833,11 @@ def extract_polygons_lattice(xy, BL, NL=None, KL=None, PVx=None, PVy=None, PVxyd
 
                     nxt = neighbors[angles == max(angles)][0]
                     bb.append(nxt)
+                    # update displacement
+                    displ += xynb[angles == max(angles)][0] - xynxt
 
                     ###############
-                    # # Check bond
+                    # Check bond
                     if viewmethod:
                         # Check individually
                         # ax1 = plt.gca()
@@ -4748,15 +4863,41 @@ def extract_polygons_lattice(xy, BL, NL=None, KL=None, PVx=None, PVy=None, PVxyd
                     mark_used = np.where((np.logical_or(BL == bb[dmyi - 1], BL == bb[dmyi])).all(axis=1))[0]
                     # mark_used = np.where((BL == thisbond).all(axis=1))
                     # print 'mark_used = ', mark_used
-                    # I think we need to adjust the line below to allow multiple entries in mark_used
-                    if not used[mark_used, 0]:
+                    # I adjusted the line below to allow multiple entries in mark_used (2018-04-26)'
+                    if not (used[mark_used, 0]).all():
                         # print 'marking bond [', thisbond, '] as used'
-                        used[mark_used, 0] = True
+                        marking, kk = True, 0
+                        while marking:
+                            if not used[mark_used[kk], 0]:
+                                used[mark_used[kk], 0] = True
+                                marking = False
+                            kk += 1
                     else:
                         # Get index of used matching reversed thisbond (this list boolean is directional)
                         # mark_used = np.where((BL == thisbond[::-1]).all(axis=1))
                         # Used this bond in reverse order
-                        used[mark_used, 1] = True
+                        marking, kk = True, 0
+                        while marking:
+                            print 'mark_used = ', mark_used
+                            print 'mark_used[kk] = ', mark_used[kk]
+                            print 'used[mark_used[kk]] = ', used[mark_used[kk]]
+                            print '--------------------------'
+                            if not used[mark_used[kk], 1]:
+                                used[mark_used[kk], 1] = True
+                                marking = False
+                            # except IndexError:
+                            #     print 'mark_used = ', mark_used
+                            #     print 'used[mark_used] = ', used[mark_used[kk]]
+                            #     print 'marking bond ', BL[mark_used[kk]]
+                            #     print 'kk = ', kk
+                            #     print 'bb = ', bb
+                            #     print 'Encountered index error in marking bond used'
+                            #     plt.show()
+                            #     sys.exit()
+                            kk += 1
+                            if kk == len(mark_used):
+                                marking = False
+
                     # print 'used = ', used
                     dmyi += 1
                     if check:
@@ -4823,17 +4964,12 @@ def extract_polygons_lattice(xy, BL, NL=None, KL=None, PVx=None, PVy=None, PVxyd
                     xyb0 = xy[bond[1], :] + np.array([addx, addy])
                     prev_angle = np.arctan2(xyb0[1] - xy[nxt, 1], xyb0[0] - xy[nxt, 0])  # .ravel()
 
-                    # print '\n---------\n'
-                    # print 'bb start = ', bb
-                    # print 'xy[nxt] = ', xy[nxt]
-                    # print 'addx = ', addx
-                    # print 'addy = ', addy
-                    # print 'xyb0 = ', xyb0
-                    # print 'prev_angle = ', prev_angle/np.pi
-                    # print 'type(prev_angle) = ', type(prev_angle)
-
                     # as long as we haven't completed the full outer polygon, add nextIND
-                    while nxt != bond[1]:
+                    # define the displacment from the starting point that we have moved so far
+                    displ = xy[nxt] - xyb0
+
+                    # as long as we haven't completed the full outer polygon, add next index
+                    while nxt != bond[1] or abs(displ[0] ** 2 + displ[1] ** 2) > eps:
                         n_tmp = NL[nxt, np.argwhere(KL[nxt]).ravel()]
                         # Exclude previous boundary particle from the neighbors array, unless its the only one
                         # (It cannot be the only one, if we removed dangling bonds)
@@ -4842,15 +4978,25 @@ def extract_polygons_lattice(xy, BL, NL=None, KL=None, PVx=None, PVy=None, PVxyd
                             neighbors = n_tmp
                         else:
                             neighbors = np.delete(n_tmp, np.where(n_tmp == bb[dmyi - 1])[0])
+                            # Add neighbors back in if this bond is not dangling but we have a NNN structure of 0-1-0
+                            if len(neighbors) == 0:
+                                neighbors = n_tmp
 
                         ########
-
-                        # check if neighbors CAN be connected across periodic bc-- ie if particle on finite boundary (finbd)
+                        # check if neighbors CAN be connected across periodic bc-- ie if particle is
+                        # on the finite boundary (finbd)
                         if nxt in finbd:
                             # Since on finite system boundary, particle could have periodic bonds
-                            # Find x values to add to neighbors, by first getting indices of row of PV (same as of NL) matching neighbors
+                            # Find x values to add to neighbors, by first getting indices of row of PV
+                            # (same as of NL) matching neighbors
                             # ALL CALCS in frame of reference of NXT particle
-                            PVinds = [np.argwhere(NL[nxt] == nnn)[0][0] for nnn in neighbors]
+                            # PVinds = [np.argwhere(NL[nxt] == nnn)[0][0] for nnn in neighbors]
+                            PVinds = []
+                            for nnn in dh.unique_nosort(neighbors):
+                                okinds = np.ravel(np.argwhere(np.logical_and(NL[nxt] == nnn, np.abs(KL[nxt]) > eps)))
+                                for okind in okinds:
+                                    PVinds.append(okind)
+
                             addx = PVx[nxt, PVinds]
                             addy = PVy[nxt, PVinds]
 
@@ -4883,10 +5029,11 @@ def extract_polygons_lattice(xy, BL, NL=None, KL=None, PVx=None, PVy=None, PVxyd
                             # ax1.plot(xy[:,0],xy[:,1],'k.')
                             # for i in range(len(xy)):
                             #   ax1.text(xy[i,0]+0.2,xy[i,1],str(i))
-                            # plt.arrow(xynxt[0], xynxt[1], np.cos(angles[selectIND]), np.sin(angles[selectIND]),fc='r', ec='r')
-                            # plt.arrow(xynb[selectIND,0], xynb[selectIND,1], np.cos(prev_angle), np.sin(prev_angle),fc='b', ec='b')
+                            # plt.arrow(xynxt[0], xynxt[1], np.cos(angles[selectIND]),
+                            #           np.sin(angles[selectIND]),fc='r', ec='r')
+                            # plt.arrow(xynb[selectIND,0], xynb[selectIND,1],
+                            #           np.cos(prev_angle), np.sin(prev_angle),fc='b', ec='b')
                             # plt.show()
-
 
                         else:
                             current_angles = np.arctan2(xy[neighbors, 1] - xy[nxt, 1],
@@ -4917,6 +5064,8 @@ def extract_polygons_lattice(xy, BL, NL=None, KL=None, PVx=None, PVy=None, PVxyd
                         ###############
                         nxt = neighbors[angles == max(angles)][0]
                         bb.append(nxt)
+                        # update displacement of particle at nxt from first site (keeping track of periodic bonds)
+                        displ += xynb[angles == max(angles)][0] - xynxt
 
                         ###############
                         # Check
@@ -4990,6 +5139,7 @@ def extract_polygons_lattice(xy, BL, NL=None, KL=None, PVx=None, PVy=None, PVxyd
     # Note that we need to ignore the last element of each polygon (which is also starting pt)
     keep = np.ones(len(polygons), dtype=bool)
     for ii in range(len(polygons)):
+        print 'ii = ', ii
         polyg = polygons[ii]
         for p2 in polygons[ii + 1:]:
             if is_cyclic_permutation(polyg[:-1], p2[:-1]):
@@ -5001,7 +5151,7 @@ def extract_polygons_lattice(xy, BL, NL=None, KL=None, PVx=None, PVy=None, PVxyd
 
     # Remove the polygon which is the entire lattice boundary, except dangling bonds
     if not periB.any():
-        print 'Removing entire lattice boundary from list of polygons...'
+        print 'le.extract_polygons_lattice: Removing entire lattice boundary from list of polygons...'
         boundary = extract_boundary(xy, NL, KL, BL)
         # print 'boundary = ', boundary
         keep = np.ones(len(polygons), dtype=bool)
@@ -5030,11 +5180,800 @@ def extract_polygons_lattice(xy, BL, NL=None, KL=None, PVx=None, PVy=None, PVxyd
     #         angle_poly += angle_tmp
     #
     #     print 'angle = ', angle_poly/6.
-
+    print 'le: polygons = ', polygons
     if check:
         polygons2PPC(xy, polygons, BL=BL, PVxydict=PVxydict, check=True)
 
     return polygons
+
+
+# Old version that works on non-periodic samples
+# def extract_polygons_lattice(xy, BL, NL=None, KL=None, PVx=None, PVy=None, PVxydict=None, viewmethod=False,
+#                              check=False):
+#     """ Extract polygons from a lattice of points.
+#     Note that dangling bonds are removed, but no points are removed. This allows correct indexing for PVxydict keys, if supplied.
+#
+#     Parameters
+#     ----------
+#     xy : NP x 2 float array
+#         points living on vertices of dual to triangulation
+#     BL : Nbonds x 2 int array
+#         Each row is a bond and contains indices of connected points
+#     NL : NP x NN int array (optional, speeds up calc if it is known there are no dangling bonds)
+#         Neighbor list. The ith row has neighbors of the ith particle, padded with zeros
+#     KL : NP x NN int array (optional, speeds up calc if it is known there are no dangling bonds)
+#         Connectivity list. The ith row has ones where ith particle is connected to NL[i,j]
+#     PVx : NP x NN float array (optional, for periodic lattices and speed)
+#         ijth element of PVx is the x-component of the vector taking NL[i,j] to its image as seen by particle i
+#         If PVx and PVy are specified, PVxydict need not be specified.
+#     PVy : NP x NN float array (optional, for periodic lattices and speed)
+#         ijth element of PVy is the y-component of the vector taking NL[i,j] to its image as seen by particle i
+#         If PVx and PVy are specified, PVxydict need not be specified.
+#     PVxydict : dict (optional, for periodic lattices)
+#         dictionary of periodic bonds (keys) to periodic vectors (values)
+#         If key = (i,j) and val = np.array([ 5.0,2.0]), then particle i sees particle j at xy[j]+val
+#         --> transforms into:  ijth element of PVx is the x-component of the vector taking NL[i,j] to its image as seen
+#         by particle i
+#     viewmethod: bool
+#         View the results of many intermediate steps
+#     check: bool
+#         Check the initial and final result
+#
+#     Returns
+#     ----------
+#     polygons : list of lists of ints
+#         list of lists of indices of each polygon
+#     """
+#     NP = len(xy)
+#
+#     if KL is None or NL is None:
+#         NL, KL = BL2NLandKL(BL, NP=NP, NN='min')
+#         if (BL < 0).any():
+#             if len(PVxydict) > 0:
+#                 PVx, PVy = PVxydict2PVxPVy(PVxydict, NL, KL)
+#             else:
+#                 raise RuntimeError('Must specify either PVxydict or KL and NL in extract_polygons_lattice()' +
+#                                    ' when periodic bonds exist!')
+#     elif (BL < 0).any():
+#         if PVx is None or PVy is None:
+#             if PVxydict is None:
+#                 raise RuntimeError('Must specify either PVxydict or PVx and PVy in extract_polygons_lattice()' +
+#                                    ' when periodic bonds exist!')
+#             else:
+#                 PVx, PVy = PVxydict2PVxPVy(PVxydict, NL, KL)
+#
+#     NN = np.shape(KL)[1]
+#     # Remove dangling bonds
+#     # dangling bonds have one particle with only one neighbor
+#     finished_dangles = False
+#     while not finished_dangles:
+#         dangles = np.where([np.count_nonzero(row) == 1 for row in KL])[0]
+#         if len(dangles) > 0:
+#             # Check if need to build PVxy dictionary from PVx and PVy before changing NL and KL
+#             if (BL < 0).any() and len(PVxydict) == 0:
+#                 PVxydict = PVxy2PVxydict(PVx, PVy, NL, KL=KL)
+#
+#             # Make sorted bond list of dangling bonds
+#             dpair = np.sort(np.array([[d0, NL[d0, np.where(KL[d0] != 0)[0]]] for d0 in dangles]), axis=1)
+#             # Remove those bonds from BL
+#             BL = dh.setdiff2d(BL, dpair.astype(BL.dtype))
+#             # print 'dpair = ', dpair
+#             # print 'ending BL = ', BL
+#             NL, KL = BL2NLandKL(BL, NP=NP, NN=NN)
+#
+#             # Now that NL and KL rebuilt (changed), (re)build PVx and PVy if periodic bcs
+#             if (BL < 0).any():
+#                 if len(PVxydict) > 0:
+#                     PVx, PVy = PVxydict2PVxPVy(PVxydict, NL, KL)
+#         else:
+#             finished_dangles = True
+#
+#     if viewmethod or check:
+#         print 'Plotting result after chopped dangles, if applicable...'
+#         display_lattice_2D(xy, BL, NL=NL, KL=KL, PVx=PVx, PVy=PVy, PVxydict=PVxydict,
+#                            title='Result after chopping dangling bonds', close=False)
+#         for i in range(len(xy)):
+#             plt.text(xy[i, 0] + 0.2, xy[i, 1], str(i))
+#         plt.show()
+#
+#     # bond markers for counterclockwise, clockwise
+#     used = np.zeros((len(BL), 2), dtype=bool)
+#     polygons = []
+#     finished = False
+#     if viewmethod:
+#         f, (ax1, ax2) = plt.subplots(1, 2)
+#
+#     # For periodicity, remember which bonds span periodic boundary
+#     periB = np.array([(row < 0).any() for row in BL])
+#
+#     if periB.any() and PVxydict is None and (PVx is None or PVy is None):
+#         raise RuntimeError('Periodic boundaries have been detected, but no periodic vectors supplied to ' +
+#                            'extract_polygons_lattice()')
+#
+#     if not periB.any():
+#         print 'no PBCs, calculating polygons...'
+#         while not finished:
+#             # Check if all bond markers are used in order A-->B
+#             # print 'Checking AB (A-->B): '
+#             todoAB = np.where(~used[:, 0])[0]
+#             # print 'len(todoAB) = ', len(todoAB)
+#             # print 'used = ', used
+#             # print 'todoAB = ', todoAB
+#             if len(todoAB) > 0:
+#                 bond = BL[todoAB[0]]
+#
+#                 # bb will be list of polygon indices
+#                 # Start with orientation going from bond[0] to bond[1]
+#                 nxt = bond[1]
+#                 bb = [bond[0], nxt]
+#                 dmyi = 1
+#
+#                 ###############
+#                 # check
+#                 if viewmethod:
+#                     ax1.plot(xy[:, 0], xy[:, 1], 'k.')
+#                     ax1.annotate("", xy=(xy[bb[dmyi], 0], xy[bb[dmyi], 1]), xycoords='data',
+#                                  xytext=(xy[nxt, 0], xy[nxt, 1]), textcoords='data',
+#                                  arrowprops=dict(arrowstyle="->",
+#                                                  color="r",
+#                                                  shrinkA=5, shrinkB=5,
+#                                                  patchA=None,
+#                                                  patchB=None,
+#                                                  connectionstyle="arc3,rad=0.2", ), )
+#                     for i in range(len(xy)):
+#                         ax1.text(xy[i, 0] + 0.2, xy[i, 1], str(i))
+#                     ax2.imshow(used)
+#                     ax1.set_aspect('equal')
+#                 ###############
+#
+#                 # as long as we haven't completed the full outer polygon, add next index
+#                 while nxt != bond[0]:
+#                     n_tmp = NL[nxt, np.argwhere(KL[nxt]).ravel()]
+#                     # Exclude previous boundary particle from the neighbors array, unless its the only one
+#                     # (It cannot be the only one, if we removed dangling bonds)
+#                     if len(n_tmp) == 1:
+#                         '''The bond is a lone bond, not part of a triangle.'''
+#                         neighbors = n_tmp
+#                     else:
+#                         neighbors = np.delete(n_tmp, np.where(n_tmp == bb[dmyi - 1])[0])
+#
+#                     angles = np.mod(np.arctan2(xy[neighbors, 1] - xy[nxt, 1], xy[neighbors, 0] - xy[nxt, 0]).ravel() \
+#                                     - np.arctan2(xy[bb[dmyi - 1], 1] - xy[nxt, 1],
+#                                                  xy[bb[dmyi - 1], 0] - xy[nxt, 0]).ravel(), 2 * np.pi)
+#                     nxt = neighbors[angles == max(angles)][0]
+#                     bb.append(nxt)
+#
+#                     ###############
+#                     # # Check
+#                     # if viewmethod:
+#                     #     plt.annotate("", xy=(xy[bb[dmyi],0],xy[bb[dmyi],1] ), xycoords='data',
+#                     #             xytext=(xy[nxt,0], xy[nxt,1]), textcoords='data',
+#                     #             arrowprops=dict(arrowstyle="->",
+#                     #                             color="r",
+#                     #                             shrinkA=5, shrinkB=5,
+#                     #                             patchA=None,
+#                     #                             patchB=None,
+#                     #                             connectionstyle="arc3,rad=0.2",),  )
+#                     #
+#                     ###############
+#
+#                     # Now mark the current bond as used
+#                     thisbond = [bb[dmyi - 1], bb[dmyi]]
+#                     # Get index of used matching thisbond
+#                     mark_used = np.where((np.logical_or(BL == bb[dmyi - 1], BL == bb[dmyi])).all(axis=1))
+#                     # mark_used = np.where((BL == thisbond).all(axis=1))
+#                     if not used[mark_used, 0]:
+#                         # print 'marking bond [', thisbond, '] as used'
+#                         used[mark_used, 0] = True
+#                     else:
+#                         # Get index of used matching reversed thisbond (this list boolean is directional)
+#                         # mark_used = np.where((BL == thisbond[::-1]).all(axis=1))
+#                         # Used this bond in reverse order
+#                         used[mark_used, 1] = True
+#                     # print 'used = ', used
+#                     dmyi += 1
+#
+#                 polygons.append(bb)
+#                 ###############
+#                 # Check new polygon
+#                 if viewmethod:
+#                     ax1.plot(xy[:, 0], xy[:, 1], 'k.')
+#                     for i in range(len(xy)):
+#                         ax1.text(xy[i, 0] + 0.2, xy[i, 1], str(i))
+#                     for dmyi in range(len(bb)):
+#                         nxt = bb[np.mod(dmyi + 1, len(bb))]
+#                         ax1.annotate("", xy=(xy[bb[dmyi], 0], xy[bb[dmyi], 1]), xycoords='data',
+#                                      xytext=(xy[nxt, 0], xy[nxt, 1]), textcoords='data',
+#                                      arrowprops=dict(arrowstyle="->",
+#                                                      color="r",
+#                                                      shrinkA=5, shrinkB=5,
+#                                                      patchA=None,
+#                                                      patchB=None,
+#                                                      connectionstyle="arc3,rad=0.2", ), )
+#                     ax2.cla()
+#                     ax2.imshow(used)
+#                     plt.pause(0.00001)
+#                     ###############
+#
+#             else:
+#                 # Check for remaining bonds unused in reverse order (B-->A)
+#                 # print 'CHECKING REVERSE (B-->A): '
+#                 todoBA = np.where(~used[:, 1])[0]
+#                 # print 'len(todoBA) = ', len(todoBA)
+#                 if len(todoBA) > 0:
+#                     bond = BL[todoBA[0]]
+#
+#                     ###############
+#                     # # check
+#                     # if viewmethod:
+#                     #     plt.annotate("", xy=(xy[bb[dmyi],0],xy[bb[dmyi],1] ), xycoords='data',
+#                     #             xytext=(xy[nxt,0], xy[nxt,1]), textcoords='data',
+#                     #             arrowprops=dict(arrowstyle="->",
+#                     #                         color="b",
+#                     #                         shrinkA=5, shrinkB=5,
+#                     #                         patchA=None,
+#                     #                         patchB=None,
+#                     #                         connectionstyle="arc3,rad=0.6",),  )
+#                     # ###############
+#
+#                     # bb will be list of polygon indices
+#                     # Start with orientation going from bond[0] to bond[1]
+#                     nxt = bond[0]
+#                     bb = [bond[1], nxt]
+#                     dmyi = 1
+#
+#                     # as long as we haven't completed the full outer polygon, add nextIND
+#                     while nxt != bond[1]:
+#                         n_tmp = NL[nxt, np.argwhere(KL[nxt]).ravel()]
+#                         # Exclude previous boundary particle from the neighbors array, unless its the only one
+#                         # (It cannot be the only one, if we removed dangling bonds)
+#                         if len(n_tmp) == 1:
+#                             '''The bond is a lone bond, not part of a triangle.'''
+#                             neighbors = n_tmp
+#                         else:
+#                             neighbors = np.delete(n_tmp, np.where(n_tmp == bb[dmyi - 1])[0])
+#
+#                         angles = np.mod(np.arctan2(xy[neighbors, 1] - xy[nxt, 1], xy[neighbors, 0] - xy[nxt, 0]).ravel() \
+#                                         - np.arctan2(xy[bb[dmyi - 1], 1] - xy[nxt, 1],
+#                                                      xy[bb[dmyi - 1], 0] - xy[nxt, 0]).ravel(), 2 * np.pi)
+#                         nxt = neighbors[angles == max(angles)][0]
+#                         bb.append(nxt)
+#
+#                         ###############
+#                         # Check
+#                         # if viewmethod:
+#                         #     plt.annotate("", xy=(xy[bb[dmyi],0],xy[bb[dmyi],1] ), xycoords='data',
+#                         #         xytext=(xy[nxt,0], xy[nxt,1]), textcoords='data',
+#                         #         arrowprops=dict(arrowstyle="->",
+#                         #                     color="b",
+#                         #                     shrinkA=5, shrinkB=5,
+#                         #                     patchA=None,
+#                         #                     patchB=None,
+#                         #                     connectionstyle="arc3,rad=0.6", #connectionstyle,
+#                         #                     ),  )
+#                         ###############
+#
+#                         # Now mark the current bond as used --> note the inversion of the bond order to match BL
+#                         thisbond = [bb[dmyi], bb[dmyi - 1]]
+#                         # Get index of used matching [bb[dmyi-1],nxt]
+#                         mark_used = np.where((BL == thisbond).all(axis=1))
+#                         if len(mark_used) > 0:
+#                             used[mark_used, 1] = True
+#                         else:
+#                             raise RuntimeError(
+#                                 'Cannot mark polygon bond as used: this bond was already used in its attempted orientation. (All bonds in first column should already be marked as used.)')
+#
+#                         dmyi += 1
+#
+#                     polygons.append(bb)
+#
+#                     # Check new polygon
+#                     if viewmethod:
+#                         ax1.plot(xy[:, 0], xy[:, 1], 'k.')
+#                         for i in range(len(xy)):
+#                             ax1.text(xy[i, 0] + 0.2, xy[i, 1], str(i))
+#                         for dmyi in range(len(bb)):
+#                             nxt = bb[np.mod(dmyi + 1, len(bb))]
+#                             ax1.annotate("", xy=(xy[bb[dmyi], 0], xy[bb[dmyi], 1]), xycoords='data',
+#                                          xytext=(xy[nxt, 0], xy[nxt, 1]), textcoords='data',
+#                                          arrowprops=dict(arrowstyle="->",
+#                                                          color="b",
+#                                                          shrinkA=5, shrinkB=5,
+#                                                          patchA=None,
+#                                                          patchB=None,
+#                                                          connectionstyle="arc3,rad=0.6", ), )
+#                         ax2.cla()
+#                         ax2.imshow(used)
+#                         plt.pause(0.00001)
+#                         ###############
+#
+#                 else:
+#                     # All bonds have been accounted for
+#                     finished = True
+#     else:
+#         print 'detected periodicity...'
+#         # get particles on the finite (non-periodic) system's boundary. This allows massive speedup.
+#         KLfin = np.zeros_like(KL)
+#         KLfin[KL > 0] = 1
+#         # Create BLfin to pass to extract_boundary()
+#         prows = np.where(BL < 0)[0]
+#         nprows = np.setdiff1d(np.arange(len(BL)), prows)
+#         if check:
+#             print 'rows of BL that are periodic: ', prows
+#             print 'BL[prows] = ', BL[prows]
+#         BLfin = BL[nprows]
+#         finbd = extract_boundary(xy, NL, KLfin, BLfin, check=check)
+#
+#         # If there were dangling points in the non-periodic representation, then we need to add those to finbd because
+#         # they will have periodic bonds attached to them.
+#         dangles = np.where(~KLfin.any(axis=1))[0]
+#         print 'dangles = ', dangles
+#         if len(dangles) > 0:
+#             print 'Found dangling points in the finite/non-periodic representation. Adding to finbd...'
+#             finbd = np.hstack((finbd, np.array(dangles)))
+#
+#         if check:
+#             print 'finite boundary: finbd = ', finbd
+#             plt.clf()
+#             display_lattice_2D(xy, BL, NL=NL, KL=KLfin, PVx=PVx, PVy=PVy, PVxydict=PVxydict,
+#                                title='Identified finite boundary', close=False)
+#             for i in range(len(xy)):
+#                 plt.text(xy[i, 0] + 0.2, xy[i, 1], str(i))
+#             plt.plot(xy[finbd, 0], xy[finbd, 1], 'ro')
+#             plt.show()
+#         first_check = True
+#
+#         # Then erase periodicity in BL
+#         BL = np.abs(BL)
+#
+#         while not finished:
+#             if len(polygons) % 20 == 0:
+#                 print 'constructed ', len(polygons), ' polygons...'
+#             # Check if all bond markers are used in order A-->B
+#             # print 'Checking AB (A-->B): '
+#             todoAB = np.where(~used[:, 0])[0]
+#             # print 'len(todoAB) = ', len(todoAB)
+#             # print 'used = ', used
+#             # print 'todoAB = ', todoAB
+#             if len(todoAB) > 0:
+#                 bond = BL[todoAB[0]]
+#
+#                 # bb will be list of polygon indices
+#                 # Start with orientation going from bond[0] to bond[1]
+#                 nxt = bond[1]
+#                 bb = [bond[0], nxt]
+#                 dmyi = 1
+#
+#                 # define 'previous angle' as backwards of current angle -- ie angle(prev-current_pos)
+#                 # Must include effect of PV on this angle -- do in ref frame of nxt particle
+#                 PVind = np.argwhere(NL[nxt] == bond[0])[0][0]
+#                 addx = PVx[nxt, PVind]
+#                 addy = PVy[nxt, PVind]
+#                 xyb0 = xy[bond[0], :] + np.array([addx, addy])
+#                 prev_angle = np.arctan2(xyb0[1] - xy[nxt, 1], xyb0[0] - xy[nxt, 0]).ravel()
+#
+#                 ###############
+#                 # check
+#                 if viewmethod:
+#                     if first_check:
+#                         ax1.plot(xy[:, 0], xy[:, 1], 'k.')
+#                         for i in range(len(xy)):
+#                             ax1.text(xy[i, 0] + 0.2, xy[i, 1], str(i))
+#                         first_check = False
+#
+#                     ax1.annotate("", xy=(xy[bb[dmyi - 1], 0], xy[bb[dmyi - 1], 1]), xycoords='data',
+#                                  xytext=(xy[nxt, 0], xy[nxt, 1]), textcoords='data',
+#                                  arrowprops=dict(arrowstyle="->",
+#                                                  color="r",
+#                                                  shrinkA=5, shrinkB=5,
+#                                                  patchA=None,
+#                                                  patchB=None,
+#                                                  connectionstyle="arc3,rad=0.2", ), )
+#                     ax2.imshow(used, aspect=1. / len(used), interpolation='none')
+#                     ax1.set_aspect('equal')
+#                 ###############
+#
+#                 # as long as we haven't completed the full outer polygon, add next index
+#                 while nxt != bond[0]:
+#                     # print nxt
+#                     #            o     o neighbors
+#                     #             \   /
+#                     #              \ /
+#                     #               o nxt
+#                     #             /
+#                     #           /
+#                     #         o  bb[dmyi-1]
+#                     #
+#                     n_tmp = NL[nxt, np.argwhere(KL[nxt]).ravel()]
+#                     # Exclude previous boundary particle from the neighbors array, unless its the only one
+#                     # (It cannot be the only one, if we removed dangling bonds)
+#                     if len(n_tmp) == 1:
+#                         '''The bond is a lone bond, not part of a triangle/polygon.'''
+#                         neighbors = n_tmp
+#                     else:
+#                         # Remove the current particle from the list of its next nearest neighbors
+#                         # Note that we may add this particle back later if bb[dmyi - 1] is its own NNN
+#                         neighbors = np.delete(n_tmp, np.where(n_tmp == bb[dmyi - 1])[0])
+#                         # Here, handle the case where a periodic bond links the neighbor back to the original particle,
+#                         # as in the bond linkage of 0-1-0.
+#                         if len(neighbors) == 0:
+#                             neighbors = [bb[dmyi - 1]]
+#
+#                     # check if neighbors CAN be connected across periodic bc--
+#                     #  ie if particle on finite boundary (finbd)
+#                     if nxt in finbd:
+#                         # Since on finite system boundary, particle could have periodic bonds
+#                         # Find x values to add to neighbors, by first getting indices of row of
+#                         # PV (same as of NL) matching neighbors
+#                         PVinds = [np.argwhere(NL[nxt] == nnn)[0][0] for nnn in neighbors]
+#                         addx = PVx[nxt, PVinds]
+#                         addy = PVy[nxt, PVinds]
+#
+#                         xynb = xy[neighbors, :] + np.dstack([addx, addy])[0]
+#                         xynxt = xy[nxt, :]
+#                         current_angles = np.arctan2(xynb[:, 1] - xynxt[1], xynb[:, 0] - xynxt[0]).ravel()
+#                         angles = np.mod(current_angles - prev_angle, 2 * np.pi)
+#
+#                         if check:
+#                             print '\n'
+#                             print 'particle ', nxt, ' is on finbd'
+#                             print 'nxt = ', nxt
+#                             print 'neighbors = ', neighbors
+#                             print 'xy[neighbors,:] =', xy[neighbors, :]
+#                             print 'addxy = ', np.dstack([addx, addy])[0]
+#                             print 'xynb = ', xynb
+#                             print 'xynxt = ', xynxt
+#                             print 'current_angles = ', current_angles
+#                             print 'prev_angle = ', prev_angle
+#                             print 'angles = ', angles
+#                             print 'redefining nxt = ', neighbors[angles == max(angles)][0]
+#
+#                         # redefine previous angle as backwards of current angle -- ie angle(prev-current_pos)
+#                         prev_angletmp = np.arctan2(xynxt[1] - xynb[:, 1], xynxt[0] - xynb[:, 0]).ravel()
+#                         print 'angles = ', angles
+#                         prev_angle = prev_angletmp[angles == max(angles)][0]
+#
+#                         # print 'prev_angletmp = ', prev_angletmp
+#                         # print 'prev_angle = ', prev_angle
+#                         # print 'NL[nxt] = ', NL[nxt]
+#                         # print 'bb = ', bb
+#
+#                         # CHECK
+#                         # ax1 = plt.gca()
+#                         # ax1.plot(xy[:,0],xy[:,1],'k.')
+#                         # for i in range(len(xy)):
+#                         #    ax1.text(xy[i,0]+0.2,xy[i,1],str(i))
+#                         # plt.show()
+#
+#
+#                     else:
+#                         current_angles = np.arctan2(xy[neighbors, 1] - xy[nxt, 1],
+#                                                     xy[neighbors, 0] - xy[nxt, 0]).ravel()
+#                         angles = np.mod(current_angles - prev_angle, 2 * np.pi)
+#                         # redefine previous angle as backwards of current angle -- ie angle(prev-current_pos)
+#                         # prev_angle = np.arctan2(xy[bb[dmyi-1],1] - xynxt[1], xy[bb[dmyi-1],0] - xynxt[0] ).ravel()
+#                         xynxt = xy[nxt, :]
+#                         xynb = xy[neighbors, :]
+#                         prev_angletmp = np.arctan2(xynxt[1] - xy[neighbors, 1], xynxt[0] - xy[neighbors, 0]).ravel()
+#                         prev_angle = prev_angletmp[angles == max(angles)][0]
+#
+#                     nxt = neighbors[angles == max(angles)][0]
+#                     bb.append(nxt)
+#
+#                     ###############
+#                     # # Check bond
+#                     if viewmethod:
+#                         # Check individually
+#                         # ax1 = plt.gca()
+#                         # ax1.plot(xy[:,0],xy[:,1],'k.')
+#                         if first_check:
+#                             for i in range(len(xy)):
+#                                 ax1.text(xy[i, 0] + 0.2, xy[i, 1], str(i))
+#
+#                         plt.annotate("", xy=(xy[bb[dmyi], 0], xy[bb[dmyi], 1]), xycoords='data',
+#                                      xytext=(xy[nxt, 0], xy[nxt, 1]), textcoords='data',
+#                                      arrowprops=dict(arrowstyle="->",
+#                                                      color="r",
+#                                                      shrinkA=5, shrinkB=5,
+#                                                      patchA=None,
+#                                                      patchB=None,
+#                                                      connectionstyle="arc3,rad=0.2", ), )
+#
+#                     ###############
+#
+#                     # Now mark the current bond as used
+#                     # thisbond = [bb[dmyi-1], bb[dmyi]]
+#                     # Get index of used matching thisbond
+#                     mark_used = np.where((np.logical_or(BL == bb[dmyi - 1], BL == bb[dmyi])).all(axis=1))[0]
+#                     # mark_used = np.where((BL == thisbond).all(axis=1))
+#                     # print 'mark_used = ', mark_used
+#                     # I think we need to adjust the line below to allow multiple entries in mark_used
+#                     if not used[mark_used, 0]:
+#                         # print 'marking bond [', thisbond, '] as used'
+#                         used[mark_used, 0] = True
+#                     else:
+#                         # Get index of used matching reversed thisbond (this list boolean is directional)
+#                         # mark_used = np.where((BL == thisbond[::-1]).all(axis=1))
+#                         # Used this bond in reverse order
+#                         used[mark_used, 1] = True
+#                     # print 'used = ', used
+#                     dmyi += 1
+#                     if check:
+#                         print 'bb = ', bb
+#
+#                 polygons.append(bb)
+#                 ###############
+#                 # Check new polygon
+#                 if viewmethod:
+#                     if first_check:
+#                         ax1.plot(xy[:, 0], xy[:, 1], 'k.')
+#                         for i in range(len(xy)):
+#                             ax1.text(xy[i, 0] + 0.2, xy[i, 1], str(i))
+#
+#                     for dmyi in range(len(bb)):
+#                         nxt = bb[np.mod(dmyi + 1, len(bb))]
+#                         ax1.annotate("", xy=(xy[bb[dmyi], 0], xy[bb[dmyi], 1]), xycoords='data',
+#                                      xytext=(xy[nxt, 0], xy[nxt, 1]), textcoords='data',
+#                                      arrowprops=dict(arrowstyle="->",
+#                                                      color="r",
+#                                                      shrinkA=5, shrinkB=5,
+#                                                      patchA=None,
+#                                                      patchB=None,
+#                                                      connectionstyle="arc3,rad=0.2", ), )
+#                     ax2.cla()
+#                     ax2.imshow(used, aspect=1. / len(used), interpolation='none')
+#                     print 'polygons = ', polygons
+#                     # plt.show()
+#                     plt.pause(0.00001)
+#                     ###############
+#
+#             else:
+#                 # Check for remaining bonds unused in reverse order (B-->A)
+#                 # print 'CHECKING REVERSE (B-->A): '
+#                 todoBA = np.where(~used[:, 1])[0]
+#                 # print 'len(todoBA) = ', len(todoBA)
+#                 if len(todoBA) > 0:
+#                     bond = BL[todoBA[0]]
+#
+#                     ###############
+#                     # # check
+#                     if viewmethod:
+#                         plt.annotate("", xy=(xy[bb[dmyi], 0], xy[bb[dmyi], 1]), xycoords='data',
+#                                      xytext=(xy[nxt, 0], xy[nxt, 1]), textcoords='data',
+#                                      arrowprops=dict(arrowstyle="->",
+#                                                      color="b",
+#                                                      shrinkA=5, shrinkB=5,
+#                                                      patchA=None,
+#                                                      patchB=None,
+#                                                      connectionstyle="arc3,rad=0.6", ), )
+#                     # ###############
+#
+#                     # bb will be list of polygon indices
+#                     # Start with orientation going from bond[0] to bond[1]
+#                     nxt = bond[0]
+#                     bb = [bond[1], nxt]
+#                     dmyi = 1
+#
+#                     # define 'previous angle' as backwards of current angle -- ie angle(prev-current_pos)
+#                     # Must include effect of PV on this angle -- do in ref frame of nxt particle
+#                     PVind = np.argwhere(NL[nxt] == bond[1])[0][0]
+#                     addx = PVx[nxt, PVind]
+#                     addy = PVy[nxt, PVind]
+#                     xyb0 = xy[bond[1], :] + np.array([addx, addy])
+#                     prev_angle = np.arctan2(xyb0[1] - xy[nxt, 1], xyb0[0] - xy[nxt, 0])  # .ravel()
+#
+#                     # print '\n---------\n'
+#                     # print 'bb start = ', bb
+#                     # print 'xy[nxt] = ', xy[nxt]
+#                     # print 'addx = ', addx
+#                     # print 'addy = ', addy
+#                     # print 'xyb0 = ', xyb0
+#                     # print 'prev_angle = ', prev_angle/np.pi
+#                     # print 'type(prev_angle) = ', type(prev_angle)
+#
+#                     # as long as we haven't completed the full outer polygon, add nextIND
+#                     while nxt != bond[1]:
+#                         n_tmp = NL[nxt, np.argwhere(KL[nxt]).ravel()]
+#                         # Exclude previous boundary particle from the neighbors array, unless its the only one
+#                         # (It cannot be the only one, if we removed dangling bonds)
+#                         if len(n_tmp) == 1:
+#                             '''The bond is a lone bond, not part of a triangle.'''
+#                             neighbors = n_tmp
+#                         else:
+#                             neighbors = np.delete(n_tmp, np.where(n_tmp == bb[dmyi - 1])[0])
+#
+#                         ########
+#
+#                         # check if neighbors CAN be connected across periodic bc-- ie if particle on finite boundary (finbd)
+#                         if nxt in finbd:
+#                             # Since on finite system boundary, particle could have periodic bonds
+#                             # Find x values to add to neighbors, by first getting indices of row of PV (same as of NL) matching neighbors
+#                             # ALL CALCS in frame of reference of NXT particle
+#                             PVinds = [np.argwhere(NL[nxt] == nnn)[0][0] for nnn in neighbors]
+#                             addx = PVx[nxt, PVinds]
+#                             addy = PVy[nxt, PVinds]
+#
+#                             xynb = xy[neighbors, :] + np.dstack([addx, addy])[0]
+#                             xynxt = xy[nxt, :]
+#                             # print '\n'
+#                             # print 'nxt = ', nxt
+#                             # print 'neighbors = ', neighbors
+#                             # print 'xy[neighbors,:] =', xy[neighbors,:]
+#                             # print 'addxy = ', np.dstack([addx, addy])[0]
+#                             # print 'xynb = ', xynb
+#                             # print 'xynxt = ', xynxt
+#                             current_angles = np.arctan2(xynb[:, 1] - xynxt[1], xynb[:, 0] - xynxt[0]).ravel()
+#                             angles = np.mod(current_angles - prev_angle, 2 * np.pi)
+#                             selectIND = np.where(angles == max(angles))[0][0]
+#                             # print 'selectIND = ', selectIND
+#                             # print 'current_angles = ', current_angles/np.pi
+#                             # print 'prev_angle = ', prev_angle/np.pi
+#                             # print 'angles = ', angles/np.pi
+#
+#                             # redefine previous angle as backwards of current angle -- ie angle(nxt - neighbor )
+#                             prev_angletmp = np.arctan2(xynxt[1] - xynb[:, 1], xynxt[0] - xynb[:, 0]).ravel()
+#                             prev_angle = prev_angletmp[selectIND]
+#
+#                             # print 'new prev_angle = ', prev_angle/np.pi
+#                             # print 'NL[nxt] = ', NL[nxt]
+#                             # print 'bb = ', bb
+#                             # # CHECK
+#                             # ax1 = plt.gca()
+#                             # ax1.plot(xy[:,0],xy[:,1],'k.')
+#                             # for i in range(len(xy)):
+#                             #   ax1.text(xy[i,0]+0.2,xy[i,1],str(i))
+#                             # plt.arrow(xynxt[0], xynxt[1], np.cos(angles[selectIND]), np.sin(angles[selectIND]),fc='r', ec='r')
+#                             # plt.arrow(xynb[selectIND,0], xynb[selectIND,1], np.cos(prev_angle), np.sin(prev_angle),fc='b', ec='b')
+#                             # plt.show()
+#
+#
+#                         else:
+#                             current_angles = np.arctan2(xy[neighbors, 1] - xy[nxt, 1],
+#                                                         xy[neighbors, 0] - xy[nxt, 0]).ravel()
+#                             angles = np.mod(current_angles - prev_angle, 2 * np.pi)
+#                             # redefine previous angle as backwards of current angle -- ie angle(prev-current_pos)
+#                             xynxt = xy[nxt, :]
+#                             xynb = xy[neighbors, :]
+#                             prev_angletmp = np.arctan2(xynxt[1] - xynb[:, 1], xynxt[0] - xynb[:, 0]).ravel()
+#                             selectIND = np.where(angles == max(angles))[0][0]
+#                             # print '\n'
+#                             # print 'nxt = ', nxt
+#                             # print 'bb = ', bb
+#                             # print 'neighbors = ', neighbors
+#                             # print 'current_angles = ', current_angles/np.pi
+#                             # print 'prev_angle = ', prev_angle/np.pi
+#                             # print 'angles = ', angles/np.pi
+#                             # print 'selectIND = ', selectIND
+#                             # print('xynxt[1] - xynb[:,1], xynxt[0] - xynb[:,0] = ', xynxt[1] - xynb[:,1],
+#                             #       xynxt[0] - xynb[:,0])
+#                             # print('np.arctan2(xynxt[1] - xynb[:,1], xynxt[0] - xynb[:,0]) = ',
+#                             #       np.arctan2(xynxt[1] - xynb[:,1], xynxt[0] - xynb[:,0]))
+#                             # print 'prev_angletmp = ', prev_angletmp/np.pi
+#
+#                             prev_angle = prev_angletmp[selectIND]
+#                             # print 'new prev_angle = ', prev_angle/np.pi
+#
+#                         ###############
+#                         nxt = neighbors[angles == max(angles)][0]
+#                         bb.append(nxt)
+#
+#                         ###############
+#                         # Check
+#                         if viewmethod:
+#                             # If checking individual bonds
+#                             # ax1 = plt.gca()
+#                             # ax1.plot(xy[:,0],xy[:,1],'k.')
+#                             # for i in range(len(xy)):
+#                             #    ax1.text(xy[i,0]+0.2,xy[i,1],str(i))
+#
+#                             plt.annotate("", xy=(xy[bb[dmyi], 0], xy[bb[dmyi], 1]), xycoords='data',
+#                                          xytext=(xy[nxt, 0], xy[nxt, 1]), textcoords='data',
+#                                          arrowprops=dict(arrowstyle="->",
+#                                                          color="b",
+#                                                          shrinkA=5, shrinkB=5,
+#                                                          patchA=None,
+#                                                          patchB=None,
+#                                                          connectionstyle="arc3,rad=0.6",
+#                                                          ), )
+#                             # plt.show()
+#                         ###############
+#
+#                         # Now mark the current bond as used --> note the inversion of the bond order to match BL
+#                         thisbond = [bb[dmyi], bb[dmyi - 1]]
+#                         # Get index of used matching [bb[dmyi-1],nxt]
+#                         mark_used = np.where((BL == thisbond).all(axis=1))
+#                         if len(mark_used) > 0:
+#                             used[mark_used, 1] = True
+#                         else:
+#                             messg = 'Cannot mark polygon bond as used: this bond was already used in its attempted' + \
+#                                     ' orientation. (All bonds in first column should already be marked as used.)'
+#                             raise RuntimeError(messg)
+#
+#                         dmyi += 1
+#
+#                     polygons.append(bb)
+#                     # print 'added polygon = ', bb
+#
+#                     # Check new polygon
+#                     if viewmethod:
+#                         if first_check:
+#                             ax1.plot(xy[:, 0], xy[:, 1], 'k.')
+#                             for i in range(len(xy)):
+#                                 ax1.text(xy[i, 0] + 0.2, xy[i, 1], str(i))
+#
+#                         for dmyi in range(len(bb)):
+#                             nxt = bb[np.mod(dmyi + 1, len(bb))]
+#                             ax1.annotate("", xy=(xy[bb[dmyi], 0], xy[bb[dmyi], 1]), xycoords='data',
+#                                          xytext=(xy[nxt, 0], xy[nxt, 1]), textcoords='data',
+#                                          arrowprops=dict(arrowstyle="->",
+#                                                          color="b",
+#                                                          shrinkA=5, shrinkB=5,
+#                                                          patchA=None,
+#                                                          patchB=None,
+#                                                          connectionstyle="arc3,rad=0.6", ), )
+#                         ax2.cla()
+#                         ax2.imshow(used)
+#                         # plt.show()
+#                         plt.pause(0.0001)
+#                         ###############
+#
+#                 else:
+#                     # All bonds have been accounted for
+#                     print 'all finished with finding polygons...'
+#                     finished = True
+#     # check
+#     if viewmethod:
+#         plt.show()
+#
+#     # Check for duplicates (up to cyclic permutations and inversions) in polygons
+#     # Note that we need to ignore the last element of each polygon (which is also starting pt)
+#     keep = np.ones(len(polygons), dtype=bool)
+#     for ii in range(len(polygons)):
+#         polyg = polygons[ii]
+#         for p2 in polygons[ii + 1:]:
+#             if is_cyclic_permutation(polyg[:-1], p2[:-1]):
+#                 keep[ii] = False
+#
+#     polygons = [polygons[i] for i in np.where(keep)[0]]
+#
+#     # Remove duplicates via inversion (maybe not necessary?)
+#
+#     # Remove the polygon which is the entire lattice boundary, except dangling bonds
+#     if not periB.any():
+#         print 'Removing entire lattice boundary from list of polygons...'
+#         boundary = extract_boundary(xy, NL, KL, BL)
+#         # print 'boundary = ', boundary
+#         keep = np.ones(len(polygons), dtype=bool)
+#         for ii in range(len(polygons)):
+#             polyg = polygons[ii]
+#             if is_cyclic_permutation(polyg[:-1], boundary.tolist()):
+#                 keep[ii] = False
+#             elif is_cyclic_permutation(polyg[:-1], boundary[::-1].tolist()):
+#                 keep[ii] = False
+#
+#         polygons = [polygons[i] for i in np.where(keep)[0]]
+#
+#     # Check order of each polygon so that it is oriented counterclockwise
+#     # for polys in polygons:
+#     #     angle_poly = 0
+#     #     # Make sure that oriented counterclockwise
+#     #     print 'polys = ', polys
+#     #     for i in range(len(polys)):
+#     #         p0 = polys[ np.mod(i-1, len(polys)-1)]
+#     #         p1 = polys[i]
+#     #         p2 = polys[ np.mod(i+1,len(polys)-1) ]
+#     #         print 'p0,p1,p2 = ', p0, p1, p2
+#     #         angle_tmp = np.mod(np.arctan2(xy[p2,1]-xy[p1,1], xy[p2,0]-xy[p1,0]) - np.arctan2( xy[p1,1]-xy[p0,1],
+#     #                            xy[p1,0]-xy[p0,0] ), 2*np.pi)
+#     #         print 'angle_tmp = ', angle_tmp
+#     #         angle_poly += angle_tmp
+#     #
+#     #     print 'angle = ', angle_poly/6.
+#
+#     if check:
+#         polygons2PPC(xy, polygons, BL=BL, PVxydict=PVxydict, check=True)
+#
+#     return polygons
 
 
 def pairwise(iterable):
@@ -5396,6 +6335,10 @@ def remove_pts(keep, xy, BL, NN='min', check=False, PVxydict=None, PV=None):
     if BL is not None and BL != []:
         # Make BLout
         # Find rows of BL for which both elems are in keep
+        # print 'le.remove_pts(): len(xy) = ', len(xy)
+        # print 'le.remove_pts(): max(BL) = ', np.max(BL.ravel())
+        # print 'le.remove_pts(): min(BL) = ', np.min(BL.ravel())
+        # print 'le.remove_pts(): keep = ', keep
         inBL0 = np.in1d(np.abs(BL[:, 0]), keep)
         inBL1 = np.in1d(np.abs(BL[:, 1]), keep)
         keepBL = np.logical_and(inBL0, inBL1)
@@ -5404,6 +6347,8 @@ def remove_pts(keep, xy, BL, NN='min', check=False, PVxydict=None, PV=None):
         if check:
             print 'Removed bonds with removed particle as endpt:'
             print 'BLt = ', BLt
+
+        # print 'le.remove_pts(): BLt = ', BLt
 
         # Make xyout
         # Reorder BLout to match new coords by making map from old to new
@@ -6478,8 +7423,9 @@ def voronoi_lattice_from_pts(points, polygon=None, NN=3, kill_outliers=True, che
     NN : int (default=3)
         the number of rows of KL, NL to make
     kill_outliers : bool
-
+        Only keep xy inside the bounds of the supplied points
     check : bool
+        view intermediate results
 
     Returns
     ----------
@@ -6775,9 +7721,10 @@ def delaunay_centroid_rect_periodic_network_from_pts(xy, LL, BBox='auto', check=
 
     """
     # Algorithm for handling boundaries:
-    #  - Copy parts of lattice to buffer up the edges
+    #  - Copy parts of lattice to buffer up the edges (this lets us handle periodic BCs correctly)
     #  - Cut the bonds with the bounding box of the loaded configuration
-    #  - For each cut bond, match the outside endpt with its corresponding mirror particle
+    #  - For each cut bond (at the periodic boundary), match the outside endpt
+    #    with its corresponding mirror particle.
     xytmp = buffer_points_for_rectangular_periodicBC(xy, LL)
     xy, NL, KL, BL = delaunay_centroid_lattice_from_pts(xytmp, polygon=None, trimbound=False, check=check)
     xytrim, NL, KL, BLtrim, PVxydict = buffered_pts_to_periodic_network(xy, BL, LL, BBox=BBox, check=check)
@@ -7051,7 +7998,10 @@ def buffered_pts_to_periodic_network(xy, BL, LL, BBox=None, check=False):
         PVxydict_check[newkey] = PVd[key]
     print 'PVxydict = ', PVxydict
     print 'PVxydict_check = ', PVxydict_check
-    raise RuntimeError('Are these PVxydicts the same?')
+    if PVxydict is None:
+        PVxydict = PVxydict_check
+    else:
+        raise RuntimeError('Are these PVxydicts the same?')
 
     if check:
         # Plot lattice without PBCs
@@ -7116,12 +8066,12 @@ def buffered_pts_to_periodicstrip(xy, BL, LL, BBox='auto', check=False):
         plt.scatter(xy[:, 0], xy[:, 1], c='g', marker='x')
         plt.scatter(xy[keep, 0], xy[keep, 1], c='b', marker='o')
         highlight_bonds(xy, BL, ax=plt.gca(), color='b', show=False)
-        highlight_bonds(xy, BLcut, ax=plt.gca(), color='r', lw=1, show=False)
+        highlight_bonds(xy, BLcut, ax=plt.gca(), color='r', lw=5, alpha=0.4, show=False)
         xxtmp = np.hstack((BBox[:, 0], np.array(BBox[:, 0])))
         print 'xxtmp = ', xxtmp
         yytmp = np.hstack((BBox[:, 1], np.array(BBox[:, 1])))
         print 'yytmp = ', yytmp
-        plt.plot(xxtmp, yytmp, 'k-', lw=2)
+        plt.plot(xxtmp, yytmp, 'k-', lw=1)
         plt.title('Showing bonds that are cut, btwn original and mirrored network')
         plt.show()
 
@@ -7173,9 +8123,11 @@ def buffered_pts_to_periodicstrip(xy, BL, LL, BBox='auto', check=False):
         if ok_stripbc:
             # Get index of the particle that resides a vector -PV away from mirror particle
             dist, ind = tree.query(xy[mpt] - PV)
-            BL2add[kk] = np.array([-kpt, -ind])
-            PVd[(kpt, ind)] = PV
-            kk += 1
+            if (kpt, ind) not in PVd and (ind, kpt) not in PVd:
+                BL2add[kk] = np.array([-kpt, -ind])
+                PVd[(kpt, ind)] = PV
+                print 'adding (kpt, ind) = ', (kpt, ind)
+                kk += 1
 
     BL2add = BL2add[0:kk]
 
@@ -7576,7 +8528,7 @@ def buffered_pts_to_periodic_network_parallelogram(xy, BL, PV, BBox='auto', flex
     return xytrim, NL, KL, BLtrim, PVxydict
 
 
-def highlight_bonds(xy, BL, ax=None, color='r', lw=1, show=True):
+def highlight_bonds(xy, BL, ax=None, color='r', lw=1, alpha=1, show=True):
     """Plot bonds specified in BL on specified axis.
 
     Parameters
@@ -7594,7 +8546,8 @@ def highlight_bonds(xy, BL, ax=None, color='r', lw=1, show=True):
     if ax is None:
         ax = plt.gca()
     for bond in BL:
-        ax.plot([xy[bond[0], 0], xy[bond[1], 0]], [xy[bond[0], 1], xy[bond[1], 1]], '-', color=color, lw=lw)
+        ax.plot([xy[bond[0], 0], xy[bond[1], 0]], [xy[bond[0], 1], xy[bond[1], 1]], '-', color=color, lw=lw,
+                alpha=alpha)
     if show:
         plt.show()
     return ax
@@ -8784,6 +9737,8 @@ def display_lattice_2D(xy, BL, NL=[], KL=[], BLNNN=[], NLNNN=[], KLNNN=[], PVxyd
         2D lattice of points (positions x,y)
     BL : array of dimension #bonds x 2
         Each row is a bond and contains indices of connected points. Negative values denote periodic BCs
+    NL : n x Max(#nn) int array or empty list
+    KL : n x Max(#nn) int array or empty list
     bs : array of dimension #bonds x 1 (like np.shape(BL[:, 0])
         Strain in each bond
     fname : string
@@ -9279,7 +10234,7 @@ def load_evaled_dict(datadir, filename):
     return ddict
 
 
-def load_params(outdir, paramsfn='parameters', ignore=None):
+def load_params(outdir, paramsfn='parameters', ignore=None, params=None):
     """Load params (dictionary) from parameters.txt file in outdir.
 
     Parameters
@@ -9293,6 +10248,8 @@ def load_params(outdir, paramsfn='parameters', ignore=None):
         keys to ignore in the loading of the parameters. For example, when loading a lattice_parameters.txt file for
         creating a network, we want to ignore any physics, like interactions, pinning strength, etc. So we'd have
         ignore = ['VO_pin_gauss', 'pin', 'Omg', etc]
+    params : dict
+        dictionary of parameters onto which to add the loaded ones. Loaded values will not overwrite existing ones
 
     Returns
     -------
@@ -9300,7 +10257,9 @@ def load_params(outdir, paramsfn='parameters', ignore=None):
         A dictionary, with all datatypes preserved as best as possible from reading in txt file
 
     """
-    params = {}
+    if params in [None, 'none']:
+        params = {}
+
     # If outdir is the entire path, it has .txt at end, and so use this to split it up into dir and filename
     if outdir[-4:] == '.txt':
         outsplit = outdir.split('/')
@@ -9316,50 +10275,55 @@ def load_params(outdir, paramsfn='parameters', ignore=None):
     outdir = dio.prepdir(outdir)
     if paramsfn[-4:] != '.txt':
         paramsfn += '.txt'
-    with open(outdir + paramsfn) as f:
-        # for line in f:
-        #     print line
-        for line in f:
-            if '# ' not in line:
-                (k, val) = line.split('=')
-                key = k.strip()
-                if key == 'date':
-                    val = val[:-1].strip()
-                    print '\nloading params for: date= ', val
-                elif sf.is_number(val):
-                    # val is a number, so convert to a float
-                    val = float(val[:-1].strip())
-                else:
-                    '''This should handle tuples without a problem'''
-                    try:
-                        # If val has both [] and , --> then it is a numpy array
-                        # (This is a convention choice.)
-                        if '[' in val and ',' in val:
-                            make_ndarray = True
 
-                        # val might be a list, so interpret it as such using ast
-                        # val = ast.literal_eval(val.strip())
-                        exec ('val = %s' % (val.strip()))
-
-                        # Make array if found '[' and ','
-                        if make_ndarray:
-                            val = np.array(val)
-
-                    except:
-                        # print 'type(val) = ', type(val)
-                        # val must be a string
+    if os.path.exists(outdir + paramsfn):
+        with open(outdir + paramsfn) as f:
+            # for line in f:
+            #     print line
+            for line in f:
+                if '# ' not in line:
+                    (k, val) = line.split('=')
+                    key = k.strip()
+                    if key == 'date':
+                        val = val[:-1].strip()
+                        print '\nloading params for: date= ', val
+                    elif sf.is_number(val):
+                        # val is a number, so convert to a float
+                        val = float(val[:-1].strip())
+                    else:
+                        '''This should handle tuples without a problem'''
                         try:
-                            # val might be a list of strings?
-                            val = val[:-1].strip()
-                        except:
-                            '''val is a list with a single number'''
-                            val = val
-                if ignore is None:
-                    params[key] = val
-                elif key not in ignore:
-                    params[key] = val
+                            # If val has both [] and , --> then it is a numpy array
+                            # (This is a convention choice.)
+                            if '[' in val and ',' in val:
+                                make_ndarray = True
 
-                # print val
+                            # val might be a list, so interpret it as such using ast
+                            # val = ast.literal_eval(val.strip())
+                            exec ('val = %s' % (val.strip()))
+
+                            # Make array if found '[' and ','
+                            if make_ndarray:
+                                val = np.array(val)
+
+                        except:
+                            # print 'type(val) = ', type(val)
+                            # val must be a string
+                            try:
+                                # val might be a list of strings?
+                                val = val[:-1].strip()
+                            except:
+                                '''val is a list with a single number'''
+                                val = val
+                    if ignore is None:
+                        params[key] = val
+                    elif key not in ignore:
+                        params[key] = val
+
+                    if key == 'ignore_tris':
+                        print key, '-->', val
+    else:
+        print('No params file exists at '+ outdir + paramsfn)
 
     return params
 
@@ -9471,6 +10435,9 @@ def build_meshfn(lp):
     rootdir = lp['rootdir']
     NH = lp['NH']
     NV = lp['NV']
+    if isinstance(NH, float):
+        raise  RuntimeError('Why is NH a float?')
+
     if 'cutLstr' in lp:
         cutLstr = lp['cutLstr']
     else:
@@ -9482,12 +10449,16 @@ def build_meshfn(lp):
         delta_lattice = '{0:0.3f}'.format(lp['delta'] / np.pi).replace('.', 'p')
     else:
         delta_lattice = ''
+    lp['delta_lattice'] = delta_lattice
+
+    print '\n\n\n in le: delta_lattice = ', lp['delta_lattice'], '\n\n\n'
+    # sys.exit()
 
     if 'phi_lattice' in lp:
-        phi_lattice = lp['phi_lattice'].replace('.', 'p')
+        phi_lattice = lp['phi_lattice'].replace('.', 'p').replace('-', 'n')
     else:
         if 'phi' in lp:
-            phi_lattice = '{0:0.3f}'.format(lp['phi']).replace('.', 'p')
+            phi_lattice = '{0:0.3f}'.format(lp['phi'] / np.pi).replace('.', 'p').replace('-', 'n')
         else:
             phi_lattice = '0p000'
 
@@ -9582,8 +10553,11 @@ def build_meshfn(lp):
 
         delta_phi_str = '_delta' + delta_lattice.replace('.', 'p') + '_phi' + phi_lattice + etastr + thetastr
         print '\n\n', delta_phi_str
+        print('NH = ', NH)
+        print('NV = ', NV)
         ffind = rootdir + 'networks/' + LatticeTop + '/' + LatticeTop + '_' + shape + periodicstr + \
-                delta_phi_str + '_' + '{0:06d}'.format(NH) + '_x_' + '{0:06d}'.format(NV) + cutLstr + '_xy.txt'
+                delta_phi_str + '_' + '{0:06d}'.format(int(NH)) + '_x_' + '{0:06d}'.format(int(NV)) + \
+                cutLstr + '_xy.txt'
         print 'searching for ', ffind
     elif LatticeTop == 'hexannulus':
         # correct NV if it equals NH --> this would never be possible, and so if NV isn't specified (ie N=NH=NV is
@@ -9759,6 +10733,18 @@ def build_meshfn(lp):
             ffind = rootdir + 'networks/' + LatticeTop + '/' + LatticeTop + '_' + shape + hustr + \
                     '_' + '{0:06d}'.format(NH) + '_x_' + '{0:06d}'.format(NV) + cutLstr + '_xy.txt'
         print 'searching for ', ffind
+    elif LatticeTop in ['iscentroid_annulus', 'kagome_iscent_annulus']:
+        # hyperuniform ID string
+        lp['shape'] = 'annulus'
+        shape = lp['shape']
+        hustr = '_d' + huID
+        if lp['periodicBC'] or lp['periodic_strip']:
+            raise RuntimeError('Network is labeled as periodic but is also an annulus.')
+
+        ffind = rootdir + 'networks/' + LatticeTop + '/' + LatticeTop + hustr + \
+                '_alph' + sf.float2pstr(lp['alph']) + \
+                originstr + '_' + '{0:06d}'.format(NH) + '_x_' + '{0:06d}'.format(NV) + cutLstr + '_xy.txt'
+        print 'searching for ', ffind
     elif LatticeTop in ['hucentroid_annulus', 'kagome_hucent_annulus']:
         # hyperuniform ID string
         lp['shape'] = 'annulus'
@@ -9791,6 +10777,22 @@ def build_meshfn(lp):
         Ndefects = str(lp['Ndefects'])
         Bvec = lp['Bvec']
         dislocxy = lp['dislocxy']  # specifies the position of a single defect, if not centered, as tuple of strings
+        if dislocxy == 'none':
+            ffind = rootdir + 'networks/' + LatticeTop + '/' + LatticeTop + '_' + shape + '_Ndefects' + Ndefects + \
+                    '_Bvec' + Bvec + '_{0:06d}'.format(NH) + '_x_' + '{0:06d}'.format(NV) + cutLstr + '_xy.txt'
+        else:
+            ffind = rootdir + 'networks/' + LatticeTop + '/' + LatticeTop + '_' + shape + '_Ndefects' + Ndefects + \
+                    '_Bvec' + Bvec + '_dislocxy_' + str(dislocxy[0]) + '_' + str(dislocxy[1]) + '_{0:06d}'.format(NH) + \
+                    '_x_' + '{0:06d}'.format(NV) + cutLstr + '_xy.txt'
+        print 'searching for ', ffind
+    elif LatticeTop == 'dislocatedTriangular':
+        Ndefects = str(lp['Ndefects'])
+        Bvec = lp['Bvec']
+        try:
+            dislocxy = lp['dislocxy']  # specifies the position of a single defect, if not centered, as tuple of strings
+        except:
+            dislocxy = 'none'
+
         if dislocxy == 'none':
             ffind = rootdir + 'networks/' + LatticeTop + '/' + LatticeTop + '_' + shape + '_Ndefects' + Ndefects + \
                     '_Bvec' + Bvec + '_{0:06d}'.format(NH) + '_x_' + '{0:06d}'.format(NV) + cutLstr + '_xy.txt'
@@ -9974,8 +10976,11 @@ def build_meshfn(lp):
         ffind = rootdir + 'networks/' + LatticeTop + '/' + LatticeTop + '_' + shape + periodicstr + delta_phi_str + \
                 alphstr + '_' + '{0:06d}'.format(NH) + '_x_' + '{0:06d}'.format(NV) + cutLstr + '_xy.txt'
         print 'searching for ', ffind
-    elif LatticeTop == 'kagper_hex':
+    elif LatticeTop in ['kagper_hex', 'kagpergrid_hex']:
         perdstr = '_perd' + '{0:0.2f}'.format(lp['percolation_density']).replace('.', 'p')
+        if LatticeTop == 'kagpergrid_hex':
+            perdstr += '_alph' + '{0:0.2f}'.format(lp['alph']).replace('.', 'p')
+
         if lp['periodicBC']:
             if lp['periodic_strip']:
                 periodicstr = '_periodicstrip'
@@ -9994,14 +10999,20 @@ def build_meshfn(lp):
         else:
             thetastr = '_theta{0:.3f}'.format(theta_lattice).replace('.', 'p') + 'pi'
 
-        delta_phi_str = '_delta' + delta_lattice + '_phi' + phi_lattice + etastr + thetastr
+        delta_phi_str = '_delta' + delta_lattice.replace('.', 'p') + '_phi' + phi_lattice + etastr + thetastr
+        # get string for configuration number
+        if 'conf' in lp:
+            confstr = '_conf{0:04d}'.format(lp['conf'])
+        else:
+            confstr = ''
+
         if lp['NP_load'] > 0:
             ffind = rootdir + 'networks/' + LatticeTop + '/' + LatticeTop + '_' + shape + periodicstr + \
-                    delta_phi_str + perdstr + \
+                    delta_phi_str + perdstr + confstr +  \
                     '_NP' + '{0:06d}'.format(lp['NP_load']) + cutLstr + '_xy.txt'
         else:
             ffind = rootdir + 'networks/' + LatticeTop + '/' + LatticeTop + '_' + shape + periodicstr + \
-                    delta_phi_str + perdstr + \
+                    delta_phi_str + perdstr + confstr +  \
                     '_' + '{0:06d}'.format(NH) + '_x_' + '{0:06d}'.format(NV) + cutLstr + '_xy.txt'
         print 'searching for ', ffind
     elif LatticeTop in ['randomcent', 'kagome_randomcent']:
@@ -10242,6 +11253,11 @@ def build_meshfn(lp):
             else:
                 periodicstr = ''
 
+            if np.abs(lp['aratio'] - 1.0) > 1e-9:
+                aratiostr = '_aratio{0:0.3f}'.format(lp['aratio']).replace('.', 'p')
+            else:
+                aratiostr = ''
+
             if eta == 0. or eta == '':
                 etastr = ''
             else:
@@ -10261,7 +11277,7 @@ def build_meshfn(lp):
             delta_phi_str = '_delta' + delta_lattice.replace('.', 'p') + '_phi' + phi_lattice + etastr + thetastr
             print '\n\n', delta_phi_str
             ffind = rootdir + 'networks/' + LatticeTop + '/' + LatticeTop + '_' + shape + periodicstr + \
-                    delta_phi_str + alphstr + \
+                    delta_phi_str + alphstr + aratiostr + \
                     '_' + '{0:06d}'.format(NH) + '_x_' + '{0:06d}'.format(NV) + cutLstr + '_xy.txt'
         else:
             raise RuntimeError('only spindley lattice coded in le is spindle itself')
@@ -10298,13 +11314,20 @@ def build_meshfn(lp):
         print 'searching for ', ffind
     elif 'junction' in LatticeTop:
         # hexjunction or kagjunction
-        periodicstr = ''
-
+        # python ./build/make_lattice.py -LT junctiontriad
         if eta == 0. or eta == '':
             etastr = ''
         else:
             etastr = '_eta{0:.3f}'.format(eta).replace('.', 'p')
-        alphstr = '_alph' + sf.float2pstr(lp['alph']) + '_nzag{0:02d}'.format(lp['intparam'])
+        if LatticeTop == 'hexjunctiontriad' or 'hexjunction2triads':
+            alphstr = '_alph' + sf.float2pstr(lp['alph'], ndigits=6)
+            if lp['periodicBC']:
+                periodicstr = '_periodic'
+            else:
+                periodicstr = ''
+        else:
+            alphstr = '_alph' + sf.float2pstr(lp['alph']) + '_nzag{0:02d}'.format(lp['intparam'])
+            periodicstr = ''
 
         delta_phi_str = '_delta' + delta_lattice.replace('.', 'p') + '_phi' + phi_lattice + etastr
         print '\n\n', delta_phi_str

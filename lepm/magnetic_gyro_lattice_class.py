@@ -27,7 +27,7 @@ import lepm.data_handling as dh
 class MagneticGyroLattice:
     def __init__(self, lattice, lp, xytup=None, NL=None, KL=None, PVx=None, PVy=None,
                  BL_nm=None, NL_nm=None, KL_nm=None,
-                 Omg=None, OmK=None, matrix=None, eigval=None, eigvect=None, eps=1e-8):
+                 Omg=None, OmK=None, matrix=None, eigval=None, eigvect=None, eps=1e-8, overwrite=False):
         """Initializes the class.
         Rout is the full lattice including the outer particles which are fixed. Rin is all the inner gyroscopes not
         fixed. Free parameters for physics are Omg Omk aoverl
@@ -206,6 +206,7 @@ class MagneticGyroLattice:
         else:
             self.lp['ABDelta'] = 0.
 
+        # First check for gaussian disorder
         if 'V0_pin_gauss' in self.lp and 'V0_spring_gauss' in self.lp:
             if abs(self.lp['V0_pin_gauss']) > eps or (self.lp['V0_spring_gauss']) > eps:
                 self.lp['dcdisorder'] = True
@@ -217,13 +218,32 @@ class MagneticGyroLattice:
                     self.lp['meshfn_exten'] += '_conf{0:04d}'.format(self.lp['pinconf'])
             else:
                 self.lp['dcdisorder'] = False
-        else:
+
+        # If no gaussian disorder check for flat disorder
+        if 'V0_pin_flat' in self.lp and 'V0_spring_flat' in self.lp and not self.lp['dcdisorder']:
+            if abs(self.lp['V0_pin_flat']) > eps or (self.lp['V0_spring_flat']) > eps:
+                self.lp['dcdisorder'] = True
+                self.lp['meshfn_exten'] += '_pinVflat' + sf.float2pstr(self.lp['V0_pin_flat'])
+                self.lp['meshfn_exten'] += '_sprVflat' + sf.float2pstr(self.lp['V0_spring_flat'])
+                if 'pinconf' not in self.lp:
+                    self.lp['pinconf'] = 0
+                elif self.lp['pinconf'] > 0:
+                    self.lp['meshfn_exten'] += '_conf{0:04d}'.format(self.lp['pinconf'])
+            else:
+                self.lp['dcdisorder'] = False
+
+        # If neither gaussian nor flat, input no disorder
+        if not self.lp['dcdisorder']:
             self.lp['V0_pin_gauss'] = 0.
             self.lp['V0_spring_gauss'] = 0.
+            self.lp['V0_pin_flat'] = 0.
+            self.lp['V0_spring_flat'] = 0.
             self.lp['pinconf'] = 0
             self.lp['dcdisorder'] = False
 
-        if abs(self.lp['ABDelta']) > eps or (self.lp['V0_pin_gauss']) > eps or (self.lp['V0_spring_gauss']) > eps:
+        vpin_has_gaussian = self.lp['V0_pin_gauss'] > eps or self.lp['V0_spring_gauss'] > eps
+        vpin_has_flat = self.lp['V0_pin_flat'] > eps or self.lp['V0_spring_flat'] > eps
+        if abs(self.lp['ABDelta']) > eps or vpin_has_gaussian or vpin_has_flat:
             # In order to load the random (V0) or alternating (AB) pinning sites, look for a txt file with the pinnings
             # that also has specifications in its meshfn exten, but IGNORE other parts of meshfnexten, if they exist.
             # Form abbreviated meshfn exten
@@ -232,18 +252,26 @@ class MagneticGyroLattice:
             print 'Trying to load offset/disorder to pinning frequencies: '
             print dio.prepdir(self.lp['meshfn']) + pinmfe
             # Attempt to load from file
-            try:
-                self.load_pinning(meshfn=self.lp['meshfn'])
-                # self.Omg = np.loadtxt(dio.prepdir(self.lp['meshfn']) + pinmfe + '.txt')
-                print 'Loaded ABDelta and/or dcdisordered pinning frequencies.'
-            except IOError:
+            if not overwrite:
+                try:
+                    self.load_pinning(meshfn=self.lp['meshfn'])
+                    # self.Omg = np.loadtxt(dio.prepdir(self.lp['meshfn']) + pinmfe + '.txt')
+                    # raise RuntimeError('This means an erronous Omg was saved --where was it saved?')
+                    print 'Loaded ABDelta and/or dcdisordered pinning frequencies.'
+                    define_Omg_now = False
+                except IOError:
+                    define_Omg_now = True
+            else:
+                define_Omg_now = True
+
+            if define_Omg_now:
                 print 'Could not load ABDelta and/or dcdisordered pinning frequencies, defining them here...'
                 # Make Omg from scratch
                 if abs(self.lp['ABDelta']) > eps:
                     asites, bsites = glatfns.ascribe_absites(self.lattice)
                     self.Omg[asites[self.inner_indices]] += self.lp['ABDelta']
                     self.Omg[bsites[self.inner_indices]] -= self.lp['ABDelta']
-                if self.lp['V0_pin_gauss'] > 0 or self.lp['V0_spring_gauss'] > 0:
+                if vpin_has_flat or vpin_has_gaussian:
                     self.add_dcdisorder()
 
                 # Save non-standard Omg
@@ -254,10 +282,11 @@ class MagneticGyroLattice:
                         force_hdf5pin = False
                 else:
                     force_hdf5pin = False
-                self.save_Omg(infodir=self.lp['meshfn'], histogram=False, force_hdf5=force_hdf5pin)
+                self.save_Omg(infodir=self.lp['meshfn'], histogram=False, force_hdf5=force_hdf5pin, overwrite=overwrite)
                 # self.plot_Omg()
                 # np.savetxt(dio.prepdir(self.lp['meshfn']) + pinmfe + '.txt', self.Omg)
                 # self.plot_Omg()
+
         ########################################################################
 
         # Non magnetic --> nm: taken from lat.NL, lat.KL, these are the inner particles (xy_in) connectivity M x M
@@ -272,7 +301,7 @@ class MagneticGyroLattice:
             # Remove self.outer_indices from lattice, and use resulting BL to get NL_nm and KL_nm
             # print 'magnetic_gyro_lattice_class: BL = ', self.lattice.BL
             # print 'magnetic_gyro_lattice_class: keep = ', self.inner_indices
-            xytmp, self.NL_nm, self.KL_nm, self.BL_nm = \
+            xytmp, self.NL_nm, self.KL_nm, self.BL_nm, self.PVxydict = \
                 le.remove_pts(self.inner_indices, self.lattice.xy, self.lattice.BL, PVxydict=self.lattice.PVxydict,
                               PV=self.lattice.PV)
 
@@ -281,7 +310,10 @@ class MagneticGyroLattice:
         self.inner_boundary = mgfns.calc_boundary_inner(self, check=False)
         # Use dh to get indices of xy_inner that are on the 'inner' network's boundary
         # Note match_values returns inds such that vals[inds] ~= arr
-        self.inner_boundary_inner = dh.match_values(self.inner_boundary, self.inner_indices)
+        if self.inner_boundary is not None:
+            self.inner_boundary_inner = dh.match_values(self.inner_boundary, self.inner_indices)
+        else:
+            self.inner_boundary_inner = None
         # print 'self.inner_indices = ', self.inner_indices
         # print 'self.inner_boundary = ', self.inner_boundary
         # print 'self.inner_boundary_inner = ', self.inner_boundary_inner
@@ -319,6 +351,7 @@ class MagneticGyroLattice:
         pinning_name = self.get_pinmeshfn_exten()
         pinfn = dio.prepdir(meshfn) + 'omg_configs.hdf5'
         if glob.glob(pinfn):
+            print('Loading pinning config from ' + pinfn)
             with h5py.File(dio.prepdir(meshfn) + 'omg_configs.hdf5', "r") as fi:
                 inhdf5 = pinning_name in fi.keys()
                 if inhdf5:
@@ -386,7 +419,7 @@ class MagneticGyroLattice:
 
         if self.Omg is None:
             # SHOULD ALREADY BY LOADED FROM FILE OR CREATED FROM SCRATCH
-            if self.lp['V0_pin_gauss'] > 0 or self.lp['ABDelta'] > 0:
+            if self.lp['V0_pin_gauss'] > 0 or self.lp['V0_pin_flat'] > 0 or self.lp['ABDelta'] > 0:
                 self.load_pinning(meshfn=meshfn)
             else:
                 self.Omg = self.lp['Omg'] * np.ones_like(self.lattice.xy[:, 0])
@@ -414,11 +447,38 @@ class MagneticGyroLattice:
         # Add gaussian noise to pinning energies
         if self.lp['V0_pin_gauss'] > 0:
             self.Omg += self.lp['V0_pin_gauss']*np.random.randn(len(self.xy_inner))
+            raise RuntimeError('Adding gaussian disorder: are you sure you want to proceed?')
         if self.lp['V0_spring_gauss'] > 0:
             print 'This is not done correctly here'
             self.OmK += self.lp['V0_spring_gauss'] * np.random.randn(np.shape(self.lattice.KL)[0],
                                                                      np.shape(self.lattice.KL)[1])
             sys.exit()
+
+        if self.lp['V0_pin_flat'] > 0 or self.lp['V0_spring_flat'] > 0:
+            # Note that we multiply by two so that V0_pin_flat is the HALF width of the distribution
+            flat_disorder = (np.random.rand(len(self.xy_inner))) * 2 - 1.0
+
+        if self.lp['V0_pin_flat'] > 0:
+            self.Omg += self.lp['V0_pin_flat'] * flat_disorder
+            if self.lp['Omg'] < 0:
+                self.Omg[self.Omg > 0] = 0.
+            elif self.lp['Omg'] > 0:
+                self.Omg[self.Omg < 0] = 0.
+
+            print('magnetic_gyro_lattice_class.py: V0_pin_flat=', self.lp['V0_pin_flat'])
+            print(self.Omg)
+
+        if self.lp['V0_spring_flat'] > 0:
+            to_add = self.lp['V0_spring_flat'] * flat_disorder[:, np.newaxis] * np.ones_like(self.OmK)
+            self.OmK[np.abs(self.OmK) > 0] += to_add[np.abs(self.OmK) > 0]
+            if self.lp['Omk'] < 0:
+                self.OmK[self.OmK > 0] = 0.
+            elif self.lp['Omk'] > 0:
+                self.OmK[self.OmK < 0] = 0.
+
+            print('magnetic_gyro_lattice_class.py: OmK after flat disorder= ')
+            print(self.OmK)
+            # sys.exit()
 
     def load_eigval_eigvect(self, attribute=True):
         # Make eigval name
@@ -1276,7 +1336,7 @@ class MagneticGyroLattice:
             plt.clf()
         print 'Saved gyro DOS to ' + eigvalfn
 
-    def save_Omg(self, infodir='auto', histogram=True, attribute=True, force_hdf5=False):
+    def save_Omg(self, infodir='auto', histogram=True, attribute=True, force_hdf5=False, overwrite=False):
         """Save Omk pinning frequencies for this MagneticGyroLattice
 
         Parameters
@@ -1309,6 +1369,9 @@ class MagneticGyroLattice:
                         # add pinning to the hdf5 file
                         print 'saving pinning in hdf5...'
                         fi.create_dataset(pinning_name, shape=np.shape(self.Omg), data=self.Omg, dtype='float')
+                    elif overwrite:
+                        data = fi[pinning_name]       # load the data
+                        data[...] = self.Omg          # assign new values to data
                     else:
                         raise RuntimeError('Pinning config already exists in hdf5, exiting...')
             else:
@@ -2164,6 +2227,12 @@ if __name__ == "__main__":
     parser.add_argument('-Vspr', '--V0_spring_gauss',
                         help='St.deviation of distribution of delta-correlated bond disorder',
                         type=float, default=0.0)
+    parser.add_argument('-Vpinf', '--V0_pin_flat',
+                        help='Half width of flat distribution of delta-correlated pinning disorder',
+                        type=float, default=0.0)
+    parser.add_argument('-Vsprf', '--V0_spring_flat',
+                        help='Half width of flat distribution of delta-correlated bond disorder',
+                        type=float, default=0.0)
     parser.add_argument('-N', '--N',
                         help='Mesh width AND height, in number of lattice spacings (leave blank to spec separate dims)',
                         type=int, default=-1)
@@ -2273,7 +2342,9 @@ if __name__ == "__main__":
     z = 0.0
 
     print 'theta = ', theta
-    dcdisorder = args.V0_pin_gauss > 0 or args.V0_spring_gauss > 0
+    dcdisorder1 = args.V0_pin_gauss > 0 or args.V0_spring_gauss > 0
+    dcdisorder2 = args.V0_pin_flat > 0 or args.V0_spring_flat > 0
+    dcdisorder = dcdisorder1 or dcdisorder2
 
     lp = {'LatticeTop': args.LatticeTop,
           'shape': shape,
@@ -2312,6 +2383,8 @@ if __name__ == "__main__":
           'Omg': float((args.Omg).replace('n', '-').replace('p', '.')),
           'V0_pin_gauss': args.V0_pin_gauss,
           'V0_spring_gauss': args.V0_spring_gauss,
+          'V0_pin_flat': args.V0_pin_flat,
+          'V0_spring_flat': args.V0_spring_flat,
           'dcdisorder': dcdisorder,
           'percolation_density': args.percolation_density,
           'ABDelta': args.ABDelta,
@@ -2350,10 +2423,12 @@ if __name__ == "__main__":
 
     if args.dispersion:
         """Example usage:
+        python magnetic_gyro_lattice_class.py -N 1 -LT hexagonal -shape square -periodic -dispersion -basis psi -aol 1.0 -Omk n0.67
         python magnetic_gyro_lattice_class.py -N 1 -LT hexagonal -shape square -periodic -dispersion -basis psi -aol 1.0 -Omk n0.67 -intrange 3
         python magnetic_gyro_lattice_class.py -N 1 -LT hexagonal -shape square -delta 0p900 -periodic -dispersion -basis psi -aol 1.0 -Omk n0.67
         python magnetic_gyro_lattice_class.py -N 1 -LT hexagonal -shape square -periodic -dispersion -basis psi -aol 0.6
         python magnetic_gyro_lattice_class.py -LT hexagonal -shape square -periodic_strip -NH 1 -NV 5 -dispersion -aol 0.6
+
         # make the strip
         python ./build/make_lattice.py -LT hexagonal -shape square -periodic_strip -NH 1 -NV 5 -skip_polygons -skip_gyroDOS
         """
@@ -2365,7 +2440,112 @@ if __name__ == "__main__":
         # glat.get_eigval_eigvect(attribute=True)
         # glat.save_eigval_eigvect(attribute=True, save_png=True)
         glat.eig_vals_vects(attribute=True)
-        glat.infinite_dispersion(save=False, nkxvals=50, nkyvals=25, save_dos_compare=True)
+        omegas, kx, ky = glat.infinite_dispersion(save=False, nkxvals=100, nkyvals=25, save_dos_compare=False)
+
+
+        # make nice plot of dispersion
+
+        band1color = '#70a6ff' # blue
+        band2color = '#ff7777'  # red
+        # band1color = '#DF813B'  # orange
+        # band2color = '#31A2C4'  # blue
+        plt.style.use('dark_background')
+        fig, ax = leplt.initialize_1panel_centered_fig(wsfrac=0.5, tspace=0)
+        for jj in range(len(ky)):
+            for kk in range(len(omegas[0, jj, :])):
+                if (omegas[:, jj, kk] > 1.0).any():
+                    ax.plot(kx, omegas[:, jj, kk], '-', color=band1color,
+                            lw=max(1, 5. / (len(kx) * len(ky))))
+                else:
+                    ax.plot(kx, omegas[:, jj, kk], '-', color=band2color,
+                            lw=max(1, 5. / (len(kx) * len(ky))))
+        ax.set_ylim(0, np.pi)
+        ax.xaxis.set_ticks([-np.pi, 0, np.pi])
+        ax.xaxis.set_ticklabels([r'$-\pi$', 0, r'$\pi$'])
+        ax.set_xlim(-np.pi, np.pi)
+        ax.set_xlabel(r'$k_x$')
+        ax.set_ylabel(r'$\omega$')
+        print 'magnetic_gyro_kspace_functions: saving image to '
+        fn = dio.prepdir(lp['meshfn']) + 'dispersion_still_2d' + lp['meshfn_exten'] + '.png'
+        print 'fn = ', fn
+        plt.savefig(fn, dpi=300)
+        plt.close('all')
+
+        sys.exit()
+        # Plot in 3D
+        fig = plt.gcf()
+        ax = fig.add_subplot(projection='3d')  # 111,
+        # rows will be kx, cols wll be ky
+        kyv = np.array([[ky[i].tolist()] * len(kx) for i in range(len(ky))]).ravel()
+        kxv = np.array([[kx.tolist()] * len(ky)]).ravel()
+        # print 'kyv = ', np.shape(kyv)
+        # print 'kxv = ', np.shape(kxv)
+        # for kk in range(len(omegas[0, 0, :])):
+        #     ax.trisurf(kxv, kyv, omegas[:, :, kk].ravel())
+
+        fontsize = 14
+        tick_fontsize = fontsize
+        # fig, ax = leplt.initialize_1panel_centered_fig(Wfig=180, Hfig=180, wsfrac=0.7, fontsize=fontsize)
+        # ax = fig.gca(projection='3d')
+
+        # fig = plt.gcf()
+        # ax = fig.add_subplot(projection='3d')
+
+        from mpl_toolkits.mplot3d import Axes3D
+        # import matplotlib.pyplot as plt
+        # from matplotlib import cm
+        # from matplotlib.ticker import LinearLocator, FormatStrFormatter
+
+        # fig, ax = leplt.initialize_1panel_centered_fig(Wfig=180, Hfig=180, wsfrac=0.7, fontsize=fontsize)
+        fig = plt.gcf()
+        ax = fig.gca(projection='3d')
+        # # Reshape colors, energies
+        # b1color = cmap((berry1.reshape(np.shape(km[0])) / (2. * np.pi)) / (vmax - vmin) + 0.5)
+        # b2color = cmap((berry2.reshape(np.shape(km[0])) / (2. * np.pi)) / (vmax - vmin) + 0.5)
+        # energy1 = energy1.reshape(np.shape(km[0]))
+        # energy2 = energy2.reshape(np.shape(km[0]))
+        # print 'b1color = ', b1color
+
+        # Plot surfaces
+        print 'ax = ', ax
+        print 'shape(kxv) = ', np.shape(kxv)
+        kxv = kxv.reshape(np.shape(omegas[:, :, 0]))
+        kyv = kyv.reshape(np.shape(omegas[:, :, 0]))
+        print 'shape(omegas) = ', np.shape(omegas)
+        surf = ax.plot_surface(kxv, kyv, omegas[:, :, 0], rstride=1, cstride=1,
+                               # facecolors=band1color,
+                               # vmin=vmin, vmax=vmax, cmap=cmap,
+                               linewidth=1, antialiased=False)
+        surf = ax.plot_surface(kxv, kyv, omegas[:, :, 1], rstride=1, cstride=1,
+                               # facecolors=band2color,
+                               # vmin=vmin, vmax=vmax, cmap=cmap,
+                               linewidth=1, antialiased=False)
+
+        ax.set_ylabel(r'$k_y$', labelpad=15, fontsize=fontsize)
+        ax.yaxis.set_ticks([-np.pi, 0, np.pi])
+        ax.yaxis.set_ticklabels([r'-$\pi$', 0, r'$\pi$'], fontsize=tick_fontsize)
+        for tick in ax.xaxis.get_major_ticks():
+            tick.label.set_fontsize(tick_fontsize)
+        ax.set_zlabel(r'$\omega$', labelpad=15, fontsize=fontsize, rotation=90)
+        # ax.zaxis.set_ticks([-np.pi, 0, np.pi])
+        # ax.zaxis.set_ticklabels([r'-$\pi$', 0, r'$\pi$'], fontsize=tick_fontsize)
+        for tick in ax.zaxis.get_major_ticks():
+            tick.label.set_fontsize(tick_fontsize)
+        ax.axis('scaled')
+        ax.set_zlim(-np.pi, np.pi)
+
+        ax.set_xlabel(r'$k_x$', labelpad=15, fontsize=fontsize)
+        ax.xaxis.set_ticks([-np.pi, 0, np.pi])
+        ax.xaxis.set_ticklabels([r'-$\pi$', 0, r'$\pi$'], fontsize=tick_fontsize)
+        for tick in ax.yaxis.get_major_ticks():
+            tick.label.set_fontsize(tick_fontsize)
+        ax.axis('scaled')
+        ax.set_xlim(-np.pi, np.pi)
+        ax.set_ylim(-np.pi, np.pi)
+
+        # ax.view_init(elev=0, azim=0.)
+        plt.savefig('/Users/npmitchell/Desktop/band_structure_3d.png')
+
 
     if args.dispersion_abtransition:
         """Example usage:
@@ -2380,6 +2560,7 @@ if __name__ == "__main__":
         """
         mglatscripts.dispersion_abtransition(lp, fullspectrum=False)
 
+
     if args.dispersion_abtransition_gapbounds:
         """Example usage:
         # Note: shortrange makes no difference for N=1 samples (single unit cell)
@@ -2390,6 +2571,7 @@ if __name__ == "__main__":
         python run_series.py -pro magnetic_gyro_lattice_class -opts LT/hexagonal/-shape/square/-periodic/-N/1/-disp_abbounds/-basis/psi -var aol 0.25:0.05:0.9
         """
         gapbounds = mglatscripts.dispersion_abtransition_gapbounds(lp)
+
 
     if args.gap_sweep:
         '''Example usage:
@@ -2521,8 +2703,12 @@ if __name__ == "__main__":
                 '_maxaol' + sf.float2pstr(np.max(aolv)) + \
                 '_minomk' + sf.float2pstr(np.min(omkv)) + \
                 '_maxomk' + sf.float2pstr(np.max(omkv)) + \
-                '_nconfs{0:03d}'.format(ind) + \
-                '_Vpin' + sf.float2pstr(lp['V0_pin_gauss'])
+                '_nconfs{0:03d}'.format(ind)
+        if abs(lp['V0_pin_flat']) > 0:
+            fname += '_Vpinflat' + sf.float2pstr(lp['V0_pin_flat'])
+        else:
+            fname += '_Vpin' + sf.float2pstr(lp['V0_pin_gauss'])
+
         plt.suptitle(r'Spectra for $N = $' + str(lp['NH']) + ' ' + lp['LatticeTop'])
         print 'saving figure: ' + fname + '.png'
         plt.savefig(fname + '.png', dpi=300)

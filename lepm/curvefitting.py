@@ -4,7 +4,7 @@ from scipy.optimize import curve_fit
 '''
 
 
-def fit_data_curvefit(function, xdata, ydata, yerr=None, **kwargs):
+def fit_data_curvefit(function, xdata, ydata, p0=None, yerr=None, **kwargs):
     """
     Use non-linear least squares to fit a function to data.
 
@@ -168,12 +168,12 @@ def fit_data_curvefit(function, xdata, ydata, yerr=None, **kwargs):
     $ plt.show()
 
     """
-    popt, pcov = curve_fit(function, xdata, ydata, sigma=yerr, **kwargs)
+    popt, pcov = curve_fit(function, xdata, ydata, p0=p0, sigma=yerr, **kwargs)
     return popt, pcov
 
 
-def linear_fit(xdata, ydata, yerr=None):
-    """
+def linear_fit(xdata, ydata, p0=None, yerr=None):
+    """Fit data to y = m * x + b
 
     Parameters
     ----------
@@ -190,12 +190,78 @@ def linear_fit(xdata, ydata, yerr=None):
     def linear(x, a, b):
         return a * x + b
 
-    popt, pcov = fit_data_curvefit(linear, xdata, ydata, yerr)
+    popt, pcov = fit_data_curvefit(linear, xdata, ydata, p0=p0, yerr=yerr)
+    return popt, pcov
+
+
+def linear_fit_pure(xdata, ydata, p0=None, yerr=None):
+    """Fit data to y = m * x + b
+
+    Parameters
+    ----------
+    xdata:
+    ydata:
+    yerr : float, n x 1 float array, or None
+        The error associated with each y data point
+
+    Returns
+    -------
+    popt : best fit for [slope, intercept]
+    pcov : covariance for fit of [slope, intercept]
+    """
+    def linear(x, a):
+        return a * x
+
+    popt, pcov = fit_data_curvefit(linear, xdata, ydata, p0=p0, yerr=yerr)
+    return popt, pcov
+
+
+def quadratic_fit_nolinear(xdata, ydata, yerr=None, p0=[1, 1]):
+    """Fit data to y = a * x**2 + b
+
+    Parameters
+    ----------
+    xdata:
+    ydata:
+    yerr : float, n x 1 float array, or None
+        The error associated with each y data point
+
+    Returns
+    -------
+    popt : best fit for [slope, intercept]
+    pcov : covariance for fit of [slope, intercept]
+    """
+    def quadratic(x, a, b):
+        return a * x ** 2 + b
+
+    popt, pcov = fit_data_curvefit(quadratic, xdata, ydata, p0=p0, yerr=yerr)
+    return popt, pcov
+
+
+def quadratic_fit_pure(xdata, ydata, p0=None, yerr=None):
+    """Fit data to y = a * x**2
+
+    Parameters
+    ----------
+    xdata:
+    ydata:
+    yerr : float, n x 1 float array, or None
+        The error associated with each y data point
+
+    Returns
+    -------
+    popt : best fit for [slope, intercept]
+    pcov : covariance for fit of [slope, intercept]
+    """
+    def quadratic(x, a):
+        return a * x ** 2
+
+    popt, pcov = fit_data_curvefit(quadratic, xdata, ydata, p0=p0, yerr=yerr)
     return popt, pcov
 
 
 def fit_log_with_cutoff(xx, yy, intensities, intensity_err=None, rlower=0.):
-    """Fit
+    """Fit intensities in image centered around 0,0 to a powerlaw
 
     Parameters
     ----------
@@ -205,6 +271,7 @@ def fit_log_with_cutoff(xx, yy, intensities, intensity_err=None, rlower=0.):
         y positions of the image
     intensities : N x N float array
         the intensities to be fit
+    intensity_err :
 
     Returns
     -------

@@ -8,8 +8,10 @@ and stack exchange discussions
 '''
 
 ##########################################
-## Geometry Classes
+# Geometry Classes
 ##########################################
+
+
 class Point(object):
     """Point class represents a point on a cartesian plane"""
     def __init__(self, x, y):
@@ -36,7 +38,8 @@ class Point(object):
     
     def __str__(self):
         return  "%s (x=%f, y=%f)" % (self.__class__.__name__, self.x, self.y)
-    
+
+
 class BoundingBox(object):
     def __init__(self, *points):
         """docstring for __init__"""
@@ -53,7 +56,8 @@ class BoundingBox(object):
     def random_point(self):
         x = self.interval_x.random_point()
         y = self.interval_y.random_point()
-        return Point(x,y)
+        return Point(x, y)
+
 
 class Polygon:
     '''Polygon class represents a set of points on a cartesian plane which form a polygon
@@ -94,7 +98,8 @@ class Polygon:
             p = bb.random_point()
             if self.contains(p):
                 return p
-            
+
+
 class Line(object):
     def __init__(self, point1, point2):
         self.point1 = point1
@@ -115,7 +120,8 @@ class Line(object):
                 return True
 
         return False
-    
+
+
 class Interval(object):
     """docstring for Interval"""
     def __init__(self, x1, x2):
@@ -124,7 +130,8 @@ class Interval(object):
         
     def random_point(self):
         return random.uniform(self.min, self.max)
-    
+
+
 class SegmentCounter(object):
     '''For testing points in polygons, pass a point to get segment counter
     '''

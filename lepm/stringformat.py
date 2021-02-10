@@ -99,7 +99,12 @@ def string_sequence_to_numpy_array(vals, dtype=str, corrections=True):
 
 def float2pstr(floatv, ndigits=2):
     """Format a float as a string, replacing decimal points with p"""
-    return ('{0:0.' + str(int(ndigits)) + 'f}').format(floatv).replace('.', 'p').replace('-', 'n')
+    return ('{0:0.' + str(int(ndigits)) + 'f}').format(float(floatv)).replace('.', 'p').replace('-', 'n')
+
+
+def exp2pstr(floatv, ndigits=2):
+    """Format a float as a string, replacing decimal points with p"""
+    return ('{0:0.' + str(int(ndigits)) + 'e}').format(floatv).replace('.', 'p').replace('-', 'n')
 
 
 def str2float(string):

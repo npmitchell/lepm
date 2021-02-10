@@ -36,6 +36,7 @@ import plotting.colormaps as cmaps
 import math
 import cmath
 import shapely.geometry as sg
+import lepm.plotting.colormaps as lecmaps
 
 '''
 Generate lattices using the lattice class: hexagonal, deformed kagome, triangular, square, hexagonalperBC, etc.
@@ -206,7 +207,7 @@ class Lattice:
                 fn = fn.replace('/Users/npmitchell/Dropbox/Soft_Matter/GPU/', '/home/npmitchell/scratch-midway/')
                 self.lp['meshfn'] = fn
         except KeyError:
-            print 'No meshfn specified for lattice.load(), attempting to find a match...'
+            print 'lattice_functions: No meshfn specified for lattice.load(), attempting to find a match...'
             self.get_meshfn()
             fn = self.lp['meshfn']
             # raise RuntimeError('There is no meshfn in the lp (params) dictionary for this lattice instance')
@@ -240,7 +241,7 @@ class Lattice:
         if meshfn[-1] == '/':
             meshfn = meshfn[:-1]
         name = meshfn.split('/')[-1]
-        print 'Lattice: loading ' + meshfn + '/' + name + '_PV.txt'
+        print 'Lattice.load_PV(): loading ' + meshfn + '/' + name + '_PV.txt'
         self.PV = np.loadtxt(meshfn + '/' + name + '_PV.txt', delimiter=',', dtype=float)
         # print 'Lattice: loaded PV'
         return self.PV
@@ -359,7 +360,7 @@ class Lattice:
         meshfn = fbase + fmain
         self.lp['meshfn'] = meshfn
         fextn = '.txt'
-        print 'Saving ', fbase + fmain + '_xy' + fextn
+        print 'lattice_functions: Saving ', fbase + fmain + '_xy' + fextn
         np.savetxt(fbase + fmain + '_xy' + fextn, self.xy, fmt='%.18e', delimiter=',', header='x,y')
         np.savetxt(fbase + fmain + '_BL' + fextn, self.BL, fmt='%i', delimiter=',', header='BL')
         np.savetxt(fbase + fmain + '_NL' + fextn, self.NL, fmt='%i', delimiter=',', header='NL')
@@ -369,26 +370,26 @@ class Lattice:
             np.savetxt(meshfn + '/' + fmain + '_LVUC' + fextn, self.LVUC, fmt='%i', delimiter=',',
                        header='LVUC : lattice vectors and unit cell vector identification')
         except:
-            print 'Could not output LVUC...'
+            print 'lattice_functions: Could not output LVUC...'
         # try:
         #   np.savetxt(meshfn+'/'+fmain+'_LV'+fextn, self.LV, fmt='%.18e', delimiter=',', header='LV : lattice vectors')
         # except:
-        #     print 'Could not output LV...'
+        #     print 'lattice_functions: Could not output LV...'
         # try:
         #    np.savetxt(meshfn+'/'+fmain+'_UC'+fextn, self.UC, fmt='%.18e',
         #               delimiter=',', header='UC : unit cell vectors --> vectors to points in repeated macrocell')
         # except:
-        #     print 'Could not output UC...'
+        #     print 'lattice_functions: Could not output UC...'
         # try:
         #    np.savetxt(meshfn+'/'+fmain+'_LL'+fextn, self.lp['LL'], fmt='%.18e', delimiter=',',
         #    header='LL : real-space dimensions in x,y (for use in sampling k-space, for ex.)')
         # except:
-        #     print 'Could not output LL...'
+        #     print 'lattice_functions: Could not output LL...'
         # try:
         #    np.savetxt(meshfn+'/'+fmain+'_polygon'+fextn, self.polygon, fmt='%.18e', delimiter=',',
         #               header='polygon : real-space bounding polygon, for cropping lattice')
         # except:
-        #     print 'Could not output polygon...'
+        #     print 'lattice_functions: Could not output polygon...'
 
         # Save everything else as lattice_params.txt
         header = 'lattice parameters dictionary'
@@ -405,20 +406,20 @@ class Lattice:
                 # PVxydict
                 header = 'PVxydict : '
                 filename = meshfn + '/' + fmain + '_PVxydict' + fextn
-                print 'saving ', filename
+                print 'lattice_functions: saving ', filename
                 dio.save_dict(self.PVxydict, filename, header)
 
                 header = 'PVx: ijth element of PVx are the x-components of the vector taking NL[i,j] to its image' + \
                          ' as seen by particle i'
                 filename = meshfn + '/' + fmain + '_PVx' + fextn
-                print 'saving ', filename
+                print 'lattice_functions: saving ', filename
                 np.savetxt(filename, self.PVx, delimiter=',', header=header)
 
                 header = 'PVy: ijth element of PVy are the y-components of the vector taking NL[i,j] to its image' + \
                          ' as seen by particle i'
                 filename = meshfn + '/' + fmain + '_PVy' + fextn
-                print 'PVy ->', self.PVy
-                print 'saving ', filename
+                print 'lattice_functions: PVy ->', self.PVy
+                print 'lattice_functions: saving ', filename
                 np.savetxt(filename, self.PVy, delimiter=',', header=header)
 
                 self.save_PV()
@@ -466,16 +467,17 @@ class Lattice:
 
     def save_PV(self):
         fmain = self.get_fmain()
-        header = 'PV: periodic vectors for periodic boundary conditions'
+        header = 'lattice_class: PV: periodic vectors for periodic boundary conditions'
         if 'meshfn' not in self.lp:
             self.get_meshfn(attribute=True)
         elif self.lp['meshfn'] is None:
             self.get_meshfn(attribute=True)
 
         self.get_PV(attribute=True)
-        print 'Lattice: saving as txt-> self.PV = ', self.PV
+        print 'lattice_class.Lattice: saving as txt-> self.PV = ', self.PV
         filename = dio.prepdir(self.lp['meshfn']) + fmain + '_PV.txt'
         np.savetxt(filename, self.PV, delimiter=',', header=header)
+        print 'lattice_class: saved file: ', filename
 
     def save_polygons(self, attribute=True, check=False):
         """Obtain the polygons comprising the network and save it as pickle"""
@@ -508,12 +510,14 @@ class Lattice:
         return NLNNN
 
     def save_KLNNN(self, KLNNN=None, attribute=True, nnnexten=None):
-        """
+        """Save KLNNN to disk for current Lattice
 
         Parameters
         ----------
-        attribute
-        nnnexten
+        attribute : bool
+            ensure that KLNNN is attributed to self
+        nnnexten : str or None
+            string specifier for details on this particular KLNNN being saved
         """
         if nnnexten is None:
             nnnexten = self.get_nnnexten()
@@ -645,12 +649,14 @@ class Lattice:
             return self.calc_PVxyij(attribute=attribute)
 
     def get_NLNNN_and_KLNNN(self, attribute=False, save=True):
-        """
+        """Compute the Next-nearest neighbor bond list and connection list.
 
         Parameters
         ----------
         attribute : bool
-        ignore_tris : bool
+            attribute NLNNN and KLNNN to self after computed
+        save : bool (default=True)
+            save NLNNN and KLNNN to disk if they are not already loaded in memory and attributed to self
 
         Returns
         -------
@@ -780,6 +786,10 @@ class Lattice:
                 self.PV = PV
             return PV
 
+    def get_lattice_vectors(self, attribute=False):
+        PV = self.get_PV(attribute=attribute)
+        return PV
+
     def get_bz(self, attribute=False):
         """Compute the brillouin zone vertices for a periodic boundary condition network
 
@@ -846,6 +856,11 @@ class Lattice:
         # plt.show()
         # sys.exit()
         return blinesegs
+
+    def get_bL(self):
+        """Compute and return the bond length list, bL"""
+        bL = self.calc_bL()
+        return bL
 
     def assign_PVs(self):
         """For each periodic bond, index the periodic vector(s) taking a neighbor to its image. This gives
@@ -1010,6 +1025,7 @@ class Lattice:
                 check = False
 
         if self.lp['periodic_strip']:
+            print 'lattice_class.Lattice(): periodic_strip -->', self.lp['periodic_strip']
             # Special case: if the entire strip is a boundary, then get
             boundary = le.extract_1d_boundaries(self.xy, self.NL, self.KL, self.BL, self.PVx, self.PVy, check=check)
             # !!!
@@ -1021,11 +1037,19 @@ class Lattice:
             inner_boundary = le.extract_inner_boundary(self.xy, self.NL, self.KL, self.BL, check=check)
             boundary = (outer_boundary, inner_boundary)
         else:
+            print 'lattice_class: here! self.xy = ', self.xy
             boundary = le.extract_boundary(self.xy, self.NL, self.KL, self.BL, check=check)
 
         if attribute:
             self.boundary = boundary
         return boundary
+
+    def calc_bL(self):
+        """Calculate the bond length list, bL"""
+        BM = le.NL2BM(self.xy, self.NL, self.KL, PVx=self.PVx, PVy=self.PVy)
+        print 'lattice_class.Lattice(): BM = ', BM
+        bL = le.BM2bL(self.NL, BM, self.BL)
+        return bL
 
     def pointset_fft(self, **kwargs):
         return lestructure.pointset_fft(self.xy, **kwargs)
@@ -1079,8 +1103,159 @@ class Lattice:
         else:
             return fig, ax
 
+    def plot_lat_colorbonds(self, bondcolors, fig=None, ax=None, meshfn='./', exten='.pdf', save=True, close=True,
+                            axis_off=True, title='auto', includeNNN=False, climv=None, **kwargs):
+        """Plot (and save if desired) an image of the lattice with connectivity, with bonds colored by the values of
+        the array bondcolors.
+        If includeNNN is True, also plots NNN vectors in blue/red.
+        If save is False, displays the lattice if show is True. Otherwise, adds lattice to axis.
+
+        Parameters
+        ----------
+        bondcolors : #bonds x 1 float array
+        fig : matplotlib figure instance
+        ax : matplotlib axis instance
+        meshfn : str or None
+        exten : str
+        save : bool
+        close : bool
+        axis_off : bool
+        title : str
+        includeNNN : bool
+        climv : None, float, or tuple
+            the color limits for the bonds
+        **kwargs : keyword arguments for nvis.movie_plot_2D()
+
+        Returns
+        -------
+        [ax, axcb]
+        """
+        # Register cmap
+        if 'BlueBlackRed' not in plt.colormaps():
+            plt.register_cmap(name='BlueBlackRed', cmap=cmaps.BlueBlackRed)
+
+        # print('lattice_class: Plotting as black and white...')
+        if save:
+            if meshfn != './' and meshfn != 'none' and meshfn is not None:
+                dio.ensure_dir(dio.prepdir(meshfn))
+            else:
+                meshfn = self.lp['meshfn']
+            if includeNNN:
+                exten = '_NNN' + exten
+            fname = meshfn + '/' + meshfn.split('/')[-1] + '_BW' + exten
+        else:
+            fname = 'none'
+
+        if title == 'auto':
+            title = self.lp['lattice_exten'] + ' ' + str(self.lp['NH']) + ' x ' + str(self.lp['NV'])
+        # xlimv = max(max(self.lp['NH'] * 0.5 + 5, self.lp['NV'] * 0.5 + 5),
+        # xlimv = max((np.max(self.xy[:, 0]) * 1.05, np.max(self.xy[:, 1]) * 1.05))
+        # ylimv = xlimv
+        if climv is None:
+            climv = 0.1
+        if self.BL.size > 0:
+            if includeNNN:
+                self.get_NLNNN_and_KLNNN(attribute=True)
+                self.get_nljnnn(attribute=True)
+                [ax, axcb] = nvis.movie_plot_2D(self.xy, self.BL, bondcolors * np.ones_like(self.BL[:, 0]),
+                                                fname, title, fig=fig, ax=ax,
+                                                NL=self.NL, KL=self.KL, NLNNN=self.NLNNN, KLNNN=self.KLNNN,
+                                                PVx=self.PVx, PVy=self.PVy,
+                                                nljnnn=self.nljnnn, kljnnn=self.kljnnn, klknnn=self.klknnn,
+                                                climv=climv,
+                                                axcb=None, colorz=False, colormap='bbr0', bgcolor='#FFFFFF',
+                                                axis_off=axis_off, **kwargs)
+            else:
+                [ax, axcb] = nvis.movie_plot_2D(self.xy, self.BL, bondcolors * np.ones_like(self.BL[:, 0]),
+                                                fname, title, fig=fig, ax=ax,
+                                                NL=self.NL, KL=self.KL, PVx=self.PVx, PVy=self.PVy, climv=climv,
+                                                axcb=None, colorz=False, colormap='bbr0', bgcolor='#FFFFFF',
+                                                axis_off=axis_off, **kwargs)
+        else:
+            raise RuntimeWarning('Could not save BW plot since BL is empty (no bonds)!')
+
+        return [ax, axcb]
+
+    def plot_lat_dash_certain_bonds(self, dashbonds, fig=None, ax=None, meshfn='./', exten='.pdf', save=True,
+                                    close=True, axis_off=True, title='auto', includeNNN=False, climv=None,
+                                    bondcolor=lecmaps.black(), **kwargs):
+        """Plot (and save if desired) an image of the lattice with connectivity, with certain designated bonds dashed
+        instead of solid. If includeNNN is True, also plots NNN vectors in blue/red.
+        If save is False, displays the lattice if show is True. Otherwise, adds lattice to axis.
+
+        Parameters
+        ----------
+        dashbonds : #bonds x 1 bool array
+            the bonds of
+        fig : matplotlib figure instance
+        ax : matplotlib axis instance
+        meshfn : str or None
+        exten : str
+        save : bool
+        close : bool
+        axis_off : bool
+        title : str
+        includeNNN : bool
+        climv : None, float, or tuple
+            the color limits for the bonds
+        **kwargs : keyword arguments for nvis.movie_plot_2D()
+
+        Returns
+        -------
+        [ax, axcb]
+        """
+        # Register cmap
+        if 'BlueBlackRed' not in plt.colormaps():
+            plt.register_cmap(name='BlueBlackRed', cmap=cmaps.BlueBlackRed)
+
+        # print('lattice_class: Plotting as black and white...')
+        if save:
+            if meshfn != './' and meshfn != 'none' and meshfn is not None:
+                dio.ensure_dir(dio.prepdir(meshfn))
+            else:
+                meshfn = self.lp['meshfn']
+            if includeNNN:
+                exten = '_NNN' + exten
+            fname = meshfn + '/' + meshfn.split('/')[-1] + '_BW' + exten
+        else:
+            fname = 'none'
+
+        if title == 'auto':
+            title = self.lp['lattice_exten'] + ' ' + str(self.lp['NH']) + ' x ' + str(self.lp['NV'])
+        # xlimv = max(max(self.lp['NH'] * 0.5 + 5, self.lp['NV'] * 0.5 + 5),
+        # xlimv = max((np.max(self.xy[:, 0]) * 1.05, np.max(self.xy[:, 1]) * 1.05))
+        # ylimv = xlimv
+        if climv is None:
+            climv = 0.1
+        if self.BL.size > 0:
+            bondcolors = np.ones_like(self.BL[:, 0])
+            bondcolors[dashbonds] = 0
+            cmap = lecmaps.colormap_from_hex(bondcolor)
+            if includeNNN:
+                self.get_NLNNN_and_KLNNN(attribute=True)
+                self.get_nljnnn(attribute=True)
+                [ax, axcb] = nvis.movie_plot_2D(self.xy, self.BL, bondcolors,
+                                                fname, title, fig=fig, ax=ax,
+                                                NL=self.NL, KL=self.KL, NLNNN=self.NLNNN, KLNNN=self.KLNNN,
+                                                PVx=self.PVx, PVy=self.PVy,
+                                                nljnnn=self.nljnnn, kljnnn=self.kljnnn, klknnn=self.klknnn,
+                                                climv=climv,
+                                                axcb=None, colorz=False, colormap=cmap, bgcolor='#FFFFFF',
+                                                axis_off=axis_off, **kwargs)
+            else:
+                [ax, axcb] = nvis.movie_plot_2D(self.xy, self.BL, bondcolors,
+                                                fname, title, fig=fig, ax=ax,
+                                                NL=self.NL, KL=self.KL, PVx=self.PVx, PVy=self.PVy, climv=climv,
+                                                axcb=None, colorz=False, colormap=cmap, bgcolor='#FFFFFF',
+                                                axis_off=axis_off, **kwargs)
+        else:
+            raise RuntimeWarning('Could not save dashed plot since BL is empty (no bonds)!')
+
+        return [ax, axcb]
+
     def plot_BW_lat(self, fig=None, ax=None, meshfn='./', exten='.pdf', save=True, close=True, axis_off=True,
-                    title='auto', includeNNN=False, **kwargs):
+                    title='auto', includeNNN=False, periodic_linestyles='dashed', periodic_bondcolor=None,
+                    ptsize=10, ptcolor=None, **kwargs):
         """Plot (and save if desired) a black and white image of the lattice with connectivity.
         If includeNNN is True, also plots NNN vectors in blue/red.
         If save is False, displays the lattice if show is True. Otherwise, adds lattice to axis.
@@ -1134,12 +1309,17 @@ class Lattice:
                                                 nljnnn=self.nljnnn, kljnnn=self.kljnnn, klknnn=self.klknnn,
                                                 climv=climv,
                                                 axcb=None, colorz=False, colormap='BlueBlackRed', bgcolor='#FFFFFF',
-                                                axis_off=axis_off, **kwargs)
+                                                axis_off=axis_off, periodic_linestyles=periodic_linestyles,
+                                                periodic_bondcolor=periodic_bondcolor,
+                                                ptsize=ptsize, ptcolor=ptcolor,
+                                                **kwargs)
             else:
                 [ax, axcb] = nvis.movie_plot_2D(self.xy, self.BL, 0 * (self.BL[:, 0]), fname, title, fig=fig, ax=ax,
                                                 NL=self.NL, KL=self.KL, PVx=self.PVx, PVy=self.PVy, climv=climv,
                                                 axcb=None, colorz=False, colormap='BlueBlackRed', bgcolor='#FFFFFF',
-                                                axis_off=axis_off, **kwargs)
+                                                axis_off=axis_off, periodic_linestyles=periodic_linestyles,
+                                                periodic_bondcolor=periodic_bondcolor,
+                                                ptsize=ptsize, ptcolor=ptcolor, **kwargs)
         else:
             raise RuntimeWarning('Could not save BW plot since BL is empty (no bonds)!')
 
@@ -1556,7 +1736,7 @@ if __name__ == '__main__':
           'NV': NV,
           'NP_load': args.NP_load,
           'rootdir': '/Users/npmitchell/Dropbox/Soft_Matter/GPU/',
-          'phi': phi * np.pi,
+          'phi': args.phi * np.pi,
           'delta': np.pi * args.delta,
           'theta': theta,
           'eta': eta,
@@ -1598,7 +1778,6 @@ if __name__ == '__main__':
                     lp['delta'] = delta * np.pi
                     lat = Lattice(lp)
                     lat.build()
-                    print 'lat.xy = ', lat.xy
                     # lat.plot_BW_lat(meshfn= outroot + lp['LatticeTop'], exten='_delta'+sf.float2pstr(delta)+'pi.png')
                     fname = 'N' + '{0:03d}'.format(max(lp['NH'], lp['NP_load'])) + \
                             'NNNangles_phi' + sf.float2pstr(lp['phi'] / np.pi) + 'pi' + sf.float2pstr(
@@ -1609,7 +1788,6 @@ if __name__ == '__main__':
                     lp['phi'] = phi * np.pi
                     lat = Lattice(lp)
                     lat.build()
-                    print 'lat.xy = ', lat.xy
                     # lat.plot_BW_lat(meshfn= outroot + lp['LatticeTop'], exten='_delta'+sf.float2pstr(delta)+'pi.png')
                     fname = 'N' + '{0:03d}'.format(max(lp['NH'], lp['NP_load'])) + \
                             'NNNangles_phi' + sf.float2pstr(phi) + 'pi' + '_delta' + sf.float2pstr(
@@ -1619,7 +1797,6 @@ if __name__ == '__main__':
             dio.ensure_dir(outdir)
             lat = Lattice(lp)
             lat.load()
-            print 'lat.xy = ', lat.xy
             lat.plot_BW_lat(meshfn=outroot + lp['LatticeTop'], exten='.pdf')
             fname = 'N' + '{0:03d}'.format(max(lp['NH'], lp['NP_load'])) + 'NNNangles_' + lp['LatticeTop'] + '.png'
             lat.plot_NNNangle_hist(outdir=outdir, fname=fname, show=False)
@@ -1630,7 +1807,7 @@ if __name__ == '__main__':
         meshfn = '/Users/npmitchell/Dropbox/Soft_Matter/GPU/networks/hucentroid/hucentroid_square_periodic_d01_NP000020'
         lat = Lattice()
         lat.load(meshfn=meshfn)
-        lat.PVx, lat.PVy = le.PVxydict2PVxPVy(lat.PVxydict, lat.NL)
+        lat.PVx, lat.PVy = le.PVxydict2PVxPVy(lat.PVxydict, lat.NL, lat.KL)
         BM = le.NL2BM(lat.xy, lat.NL, lat.KL, PVx=lat.PVx, PVy=lat.PVy)
         bL = le.BM2bL(lat.NL, BM, lat.BL)
         plt.hist(bL)
@@ -1692,8 +1869,8 @@ if __name__ == '__main__':
         lp['meshfn'] = meshfn
         lat = Lattice(lp)
         lat.load()
-        print 'Saving nice BW plot...'
-        lat.plot_BW_lat(meshfn=lat.lp['meshfn'])
+        print 'lattice_class: Saving nice BW plot...'
+        lat.plot_BW_lat(meshfn=lat.lp['meshfn'], lw=1)
         lat.plot_WB_lat(meshfn=lat.lp['meshfn'], lw=2)
 
     if args.pointset:
@@ -1701,7 +1878,7 @@ if __name__ == '__main__':
         lp['meshfn'] = meshfn
         lat = Lattice(lp)
         lat.load()
-        print '\nPerforming image of points...'
+        print 'lattice_functions: \nPerforming image of points...'
 
         lat.pointset(outdir=lat.lp['meshfn'], wsfrac=0.8)
 
@@ -1716,7 +1893,7 @@ if __name__ == '__main__':
         lp['meshfn'] = meshfn
         lat = Lattice(lp)
         lat.load()
-        print '\nDrawing two periodic edges...'
+        print 'lattice_functions: \nDrawing two periodic edges...'
         axx = lat.plot_BW_lat(save=False)
         ax, axcb = axx[0], axx[1]
         bb0, bb1 = lat.get_boundary()
@@ -1735,10 +1912,10 @@ if __name__ == '__main__':
         lat.load()
         NLnns, KLnns, pvxnns, pvynns = lat.get_intnn_info(args.intnn, attribute=True)
         for ii in range(args.intnn):
-            print 'NL = ', NLnns[ii]
-            print 'KL = ', KLnns[ii]
-            print 'pvx  = ', pvxnns[ii]
-            print 'pvy  = ', pvynns[ii]
+            print 'lattice_functions: NL = ', NLnns[ii]
+            print 'lattice_functions: KL = ', KLnns[ii]
+            print 'lattice_functions: pvx  = ', pvxnns[ii]
+            print 'lattice_functions: pvy  = ', pvynns[ii]
 
             # BL = le.NL2BL(NLnns[ii], KLnns[ii])
             # print 'BL = ', BL
@@ -1760,13 +1937,13 @@ if __name__ == '__main__':
                             vx, vy = pvxnns[ii][jj, kk], pvynns[ii][jj, kk]
                             plt.plot([lat.xy[jj, 0], lat.xy[nei, 0] + vx],
                                      [lat.xy[jj, 1], lat.xy[nei, 1] + vy], 'k-')
-                            print 'vx, vy = ', (vx, vy)
-                            print 'xy0, xy1 = ', (lat.xy[jj], lat.xy[nei] + np.array([vx, vy]))
+                            print 'lattice_functions: vx, vy = ', (vx, vy)
+                            print 'lattice_functions: xy0, xy1 = ', (lat.xy[jj], lat.xy[nei] + np.array([vx, vy]))
                             plt.pause(0.2)
 
             plt.axis('scaled')
             outfn = dio.prepdir(lat.lp['meshfn']) + 'nnn' + str(ii) + '.pdf'
-            print 'saving to ', outfn
+            print 'lattice_functions: saving to ', outfn
             plt.savefig(outfn)
             plt.show()
             plt.close('all')

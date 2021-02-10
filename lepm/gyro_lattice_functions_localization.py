@@ -14,6 +14,7 @@ try:
     import cPickle as pickle
 except ImportError:
     import pickle
+from lepm.gyro_lattice_functions import calc_magevecs
 
 
 '''Auxiliary functions supporting gyro_lattice_class.py for measuring localization of normal modes'''
@@ -287,25 +288,25 @@ def fit_eigvect_to_exponential_periodic(xy, eigval, eigvect, LL, locutoffd=None,
 #     return fits
 
 
-def calc_magevecs(eigvect):
-    """Compute the magnitude of the second half of all eigenvectors, by norming their x and y components in quad
-    NOTE: This is the same function as in gyro_lattice_functions.py, copied for imoprt convenience.
-
-    Parameters
-    ----------
-    eigvect : 2*N x 2*N complex array
-        eigenvectors of the matrix, sorted by order of imaginary components of eigvals
-        Eigvect is stored as NModes x NP*2 array, with x and y components alternating, like:
-        x0, y0, x1, y1, ... xNP, yNP.
-
-    Returns
-    -------
-    magevecs : #particles x #particles float array
-        The magnitude of the upper half of eigenvectors at each site. magevecs[i, j] is the magnitude of the i+NP
-        normal mode at site j.
-    """
-    from lepm.gyro_lattice_functions import calc_magevecs
-    return calc_magevecs(eigvect)
+# THIS FUNCTION IS IMPORTED, NOT REPRODUCED HERE
+# def calc_magevecs(eigvect):
+#     """Compute the magnitude of the second half of all eigenvectors, by norming their x and y components in quad
+#     NOTE: This is the same function as in gyro_lattice_functions.py, copied for imoprt convenience.
+#
+#     Parameters
+#     ----------
+#     eigvect : 2*N x 2*N complex array
+#         eigenvectors of the matrix, sorted by order of imaginary components of eigvals
+#         Eigvect is stored as NModes x NP*2 array, with x and y components alternating, like:
+#         x0, y0, x1, y1, ... xNP, yNP.
+#
+#     Returns
+#     -------
+#     magevecs : #particles x #particles float array
+#         The magnitude of the upper half of eigenvectors at each site. magevecs[i, j] is the magnitude of the i+NP
+#         normal mode at site j.
+#     """
+#     return calc_magevecs(eigvect)
 
 
 def fit_eigvect_to_exponential_1dperiodic(xy, eigval, eigvect, LL, locutoffd=None, hicutoffd=None, check=False):
@@ -550,14 +551,15 @@ def topbottom_edgelocz_dispersion(glat, kx=None, ky=None, nkxvals=50, nkyvals=20
                 elocz_ij = fit_eigvect_edge_boundaries(xy, boundaries, eigvect, PVxydict, eigval=eigval, check=check)
                 nrow = np.shape(elocz_ij)[0]
                 elocz_full = np.zeros((2 * nrow, 6), dtype=float)
+                # keep only the top/bottom designation
                 elocz_full[0:nrow] = elocz_ij[::-1]
                 elocz_full[nrow:2 * nrow] = elocz_ij
                 elocz[ii, jj, :, :] = elocz_full
-                plt.plot(np.imag(eigval), elocz_full[:, 1], 'k-')
-                plt.plot(np.imag(eigval), elocz_full[:, 5], 'b.-')
-                plt.show()
-                print 'glatfns_localization: exiting here'
-                sys.exit()
+                # plt.plot(np.imag(eigval), elocz_full[:, 1], 'k-')
+                # plt.plot(np.imag(eigval), elocz_full[:, 5], 'b.-')
+                # plt.show()
+                # print 'glatfns_localization: exiting here'
+                # sys.exit()
 
                 # if check, plot these normal modes
                 if check and checkdir is not None:
@@ -569,6 +571,226 @@ def topbottom_edgelocz_dispersion(glat, kx=None, ky=None, nkxvals=50, nkyvals=20
             ii += 1
 
     return omegas, kx, ky, elocz
+
+
+def bottommiddletop_edgelocz_dispersion(glat, kx=None, ky=None, nkxvals=50, nkyvals=20,
+                                        save=True, save_plot=True, title='Dispersion relation',
+                                        save_dos_compare=False, outdir=None, name=None, ax=None, check=False,
+                                        checkdir=None, bndy_thres=0.333333):
+    """Here, there is no fitting the edge localizaiton, instead just measure if there is more excitation on the top,
+    middle, or bottom third of the system and use that as a proxy for localization bias (coloring band structures)
+
+    """
+
+    import lepm.gyro_lattice_kspace_functions as glatkspacefns
+    import lepm.plotting.gyro_lattice_plotting_functions as glatpfns
+
+    name, kx, ky = glatkspacefns.prepare_dispersion_params(glat, kx=None, ky=None, nkxvals=nkxvals, nkyvals=nkyvals,
+                                                           outdir=None, name=None)
+
+    print('checking for file: ' + name + '.pkl')
+    elocname = name.replace('dispersion', 'dispersionelocz_bottommiddletop')
+    if glob.glob(name + '.pkl') and glob.glob(elocname):
+        saved = True
+        with open(name + '.pkl', "rb") as fn:
+            res = pkl.load(fn)
+
+        omegas = res['omegas']
+        kx = res['kx']
+        ky = res['ky']
+        elocz_tmb = res['bottommiddletop']
+    else:
+        # dispersion is not saved, compute it!
+        saved = False
+        if 'annulus' in glat.lp['meshfn']:
+            tb = locz_innerouter_dispersion(glat, bndy_thres=bndy_thres)
+        else:
+            omegas = np.zeros((len(kx), len(ky), len(glat.lattice.xy) * 2))
+            elocz = np.zeros((len(kx), len(ky), len(glat.lattice.xy) * 2, 4))
+            matk = lambda k: glatkspacefns.dynamical_matrix_kspace(k, glat, eps=1e-10)
+            xy, PVxydict = glat.lattice.xy, glat.lattice.PVxydict
+            boundaries = glat.lattice.get_boundary()
+            top, bottom = np.max(xy[:, 1]), np.min(xy[:, 1])
+            below, above = (top - bottom) * bndy_thres + bottom, top - (top - bottom) * bndy_thres
+            ii = 0
+            for kxi in kx:
+                print 'glatkspace_fns: infinite_dispersion(): ii = ', ii
+                jj = 0
+                for kyj in ky:
+                    # print 'jj = ', jj
+                    matrix = matk([kxi, kyj])
+                    print 'glatkspace_fns: diagonalizing...'
+                    eigval, eigvect = np.linalg.eig(matrix)
+                    si = np.argsort(np.imag(eigval))
+                    omegas[ii, jj, :] = np.imag(eigval[si])
+                    eigvect = eigvect[si]
+                    # Compute the bias in energy towards top, middle, bottom
+                    elocz_ij = bottommiddletop_excitation(xy, eigvect, below=below, above=above, top=top, bottom=bottom,
+                                                          check=check, checkdir=checkdir)
+                    nrow = np.shape(elocz_ij)[0]
+                    elocz_full = np.zeros((2 * nrow, 4), dtype=float)
+                    # keep only the top/bottom designation
+                    elocz_full[0:nrow] = elocz_ij[::-1]
+                    elocz_full[nrow:2 * nrow] = elocz_ij
+                    elocz[ii, jj, :, :] = elocz_full
+                    # plt.plot(np.imag(eigval), elocz_full[:, 1], 'k-')
+                    # plt.plot(np.imag(eigval), elocz_full[:, 5], 'b.-')
+                    # plt.show()
+                    # print 'glatfns_localization: exiting here'
+                    # sys.exit()
+                    jj += 1
+                ii += 1
+
+    return omegas, kx, ky, elocz
+
+
+def bottommiddletop_excitation(xy, eigvect, below=None, above=None, top=None, bottom=None, check=False,
+                               checkdir=None):
+    """Determine if excitation is weighted toward top, middle or bottom: which chunk has the most excitation:
+    0-bottom, 0.5-middle, 1.0-top
+
+    Returns
+    -------
+    tmb : (#eigval*0.5) x 1 float array
+        0 for bottom, 0.5 for middle, 1.0 for top
+    """
+    if above is None:
+        if top is None:
+            top = np.max(xy[:, 1])
+        if bottom is None:
+            bottom = np.min(xy[:, 1])
+
+        above = (top - bottom) * 2. / 3. + bottom
+    if below is None:
+        if top is None:
+            top = np.max(xy[:, 1])
+        if bottom is None:
+            bottom = np.min(xy[:, 1])
+
+        below = (top - bottom) / 3. + bottom
+
+    magevec = calc_magevecs(eigvect)
+    # etop is the energy in the top third of the system, similar for ebot and emid
+    # Note that each of etop ebot and emid should have lengths of #particles
+    etop = np.sum(magevec[:, xy[:, 1] > above], axis=1)
+    ebot = np.sum(magevec[:, xy[:, 1] < below], axis=1)
+    emid = np.sum(magevec[:, np.logical_and(xy[:, 1] > below, xy[:, 1] < above)], axis=1)
+    # Prepare ebot, emid, etop, indicator (0, 0.5, 1) as columns
+    tmb = np.dstack((ebot, emid, etop, 0.5 * np.ones_like(xy[:, 0])))[0]
+    tops = np.logical_and(etop > emid, etop > ebot)
+    bots = np.logical_and(ebot > emid, ebot > etop)
+    print 'bots = ', bots
+    tmb[tops, 3] = 1.0
+    tmb[bots, 3] = 0.0
+
+    if check:
+        # plot excitation magnitude, excitation, and result
+        import lepm.plotting.plotting as leplt
+        import lepm.dataio as dio
+        fig, ax, cax = leplt.initialize_2panel_1cbar_centy()
+        for (mag, kk) in zip(magevec, np.arange(len(xy[:, 0]))):
+            ax[0].plot(xy[:, 1], mag, 'b.')
+            ylims = ax[0].get_ylim()
+            ax[0].plot([below, below], ylims, 'k--')
+            ax[0].plot([above, above], ylims, 'k--')
+            ax[0].set_title('tmb = {0:0.1f}'.format(tmb[kk]))
+            ax[1].scatter(xy[:, 0], xy[:, 1], s=mag*250)
+            ax[1].set_ylim(np.min(xy[:, 1]), np.max(xy[:, 1]))
+            ax[1].set_xlim(np.min(xy[:, 0]), np.max(xy[:, 0]))
+            if checkdir is not None:
+                plt.savefig(dio.prepdir(checkdir) + 'magevec_{0:06d}'.format(kk) + '.png')
+            else:
+                plt.pause(1)
+            ax[0].cla()
+            ax[1].cla()
+    return tmb
+
+
+def locz_which_boundary_com(glat, bndy_thres, magfloor_thres=0.05):
+    """Discern if excitation of each mode is localized to zeroth or first boundary by using a simple center of mass.
+
+    Parameters
+    ----------
+    glat : GyroLattice instance
+    bndy_thres : float
+        threshold from a boundary for the center of mass to be to consider the mode to be localized to that boundary
+    magfloor_thres : float
+        fraction of the largest magnitude excitation in the normal mode below which to suppress any excitation in
+        distance measurement
+
+    Returns
+    -------
+
+    """
+    mags = glat.get_magevecs(eigvect=None)
+    bndy0, bndy1 = glat.lattice.get_boundary()
+
+    # todo: be smarter about how to determine if we should use a radial boundary or a linear one
+    # todo: generalize to get distance of com from all boundary particles and use proximity to nearest one as proxy
+    if 'annulus' in glat.lp['meshfn']:
+        # Get radial coordinate for each site
+        rr = np.sqrt(glat.lattice.xy[:, 0] ** 2 + glat.lattice.xy[:, 1] ** 2)
+        # Get inner cutoff from where two boundaries are
+        outsider = np.mean(np.sqrt(glat.lattice.xy[bndy0, 0] ** 2 + glat.lattice.xy[bndy0, 1] ** 2))
+        insider = np.mean(np.sqrt(glat.lattice.xy[bndy1, 0] ** 2 + glat.lattice.xy[bndy1, 1] ** 2))
+        thickness = outsider - insider
+        print 'insider = ', insider
+        print 'outsider = ', outsider
+        print 'thickness = ', thickness
+
+        # for each mode, define the color by whether the center of mass is within bndy_thres * thickness of outer
+        # or inner boundary
+        # Note that mags is only half as long as eigval
+        lenc = len(mags)
+        tb = 0.5 * np.ones(2 * lenc, dtype=float)
+        for kk in np.arange(len(mags)):
+            magfloor = mags[kk]
+            magfloor[magfloor < magfloor_thres * np.max(magfloor)] = 0.
+            # Take center of mass
+            rcom = np.sum(rr * magfloor) / np.sum(magfloor)
+            # rcom = np.sqrt(com[0] ** 2 + com[1] ** 2)
+            if np.abs(rcom - outsider) / thickness < bndy_thres:
+                # localized to outside boundary
+                tb[lenc + kk] = 0.0
+            elif np.abs(rcom - insider) / thickness < bndy_thres:
+                # localized to inside boundary
+                tb[lenc + kk] = 1.0
+            else:
+                tb[lenc + kk] = 0.5
+    else:
+        # raise RuntimeError('todo: be smarter about how to determine if we should use a radial boundary '
+        #                    'or a linear one. Also, generalize to get distance of com from all boundary '
+        #                    'particles and use proximity to nearest one as proxy')
+
+        # Get radial coordinate for each site
+        yy = glat.lattice.xy[:, 1]
+        outsidey = np.mean(glat.lattice.xy[bndy0, 1])
+        insidey = np.mean(glat.lattice.xy[bndy1, 1])
+        thickness = outsidey - insidey
+
+        # for each mode, define the color by whether the center of mass is within bndy_thres * thickness of top
+        # or bottom boundary
+        # Note that mags is only half as long as eigval
+        lenc = len(mags)
+        tb = 0.5 * np.ones(2 * lenc, dtype=float)
+        for kk in np.arange(len(mags)):
+            magfloor = mags[kk]
+            magfloor[magfloor < magfloor_thres * np.max(magfloor)] = 0.
+            # Take center of mass
+            ycom = np.sum(yy * magfloor) / np.sum(magfloor)
+            # rcom = np.sqrt(com[0] ** 2 + com[1] ** 2)
+            if np.abs(ycom - outsidey) / thickness < bndy_thres:
+                # localized to outside boundary
+                tb[lenc + kk] = 0.0
+            elif np.abs(ycom - insidey) / thickness < bndy_thres:
+                # localized to inside boundary
+                tb[lenc + kk] = 1.0
+            else:
+                tb[lenc + kk] = 0.5
+
+    # Copy the filled in part of tb to the first half
+    tb[0:lenc] = tb[lenc:][::-1]
+    return tb
 
 
 def fit_eigvect_edge_boundaries(xy, boundary, eigvect, PVxydict, eigval=None, locutoffd=None, hicutoffd=None,

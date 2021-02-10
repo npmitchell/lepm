@@ -7,6 +7,45 @@ Auxiliary discrete math functions
 '''
 
 
+def round_sigfigs(x, sigfigs):
+    """
+    Rounds the value(s) in x to the number of significant figures in sigfigs.
+
+    Restrictions:
+    sigfigs must be an integer type and store a positive value.
+    x must be a real value or an array like object containing only real values.
+    """
+    if not ( type(sigfigs) is int or np.issubdtype(sigfigs, np.integer)):
+        raise TypeError("round_sigfigs: sigfigs must be an integer.")
+
+    if not np.all(np.isreal( x )):
+        raise TypeError("round_sigfigs: all x must be real.")
+
+    if sigfigs <= 0:
+        raise ValueError("round_sigfigs: sigfigs must be positive.")
+
+    xsgn = np.sign(x)
+    absx = xsgn * x
+    mantissas, binaryExponents = np.frexp( absx )
+
+    decimalExponents = __logBase10of2 * binaryExponents
+    intParts = np.floor(decimalExponents)
+
+    mantissas *= 10.0**(decimalExponents - intParts)
+
+    if type(mantissas) is float or np.issctype(np.dtype(mantissas)):
+        if mantissas < 1.0:
+            mantissas *= 10.0
+            omags -= 1.0
+
+    elif np.issubdtype(mantissas, np.ndarray):
+        fixmsk = mantissas < 1.0
+        mantissas[fixmsk] *= 10.0
+        omags[fixmsk] -= 1.0
+
+    return xsgn * np.around(mantissas, decimals=sigfigs - 1) * 10.0**intParts
+
+
 def numerical_derivative_2d(func, h, kvec):
     """Calculates a 2D numerical derivative of a function taking a 1x2 float array as input
 
@@ -192,3 +231,74 @@ def rotation_matrix_3D(axis, theta):
     return np.array([[aa + bb - cc - dd, 2 * (bc + ad), 2 * (bd - ac)],
                      [2 * (bc - ad), aa + cc - bb - dd, 2 * (cd + ab)],
                      [2 * (bd + ac), 2 * (cd - ab), aa + dd - bb - cc]])
+
+
+def savitzky_golay(y, window_size, polyorder, deriv=0, delta=1.0, axis=-1, mode='interp', cval=0.0):
+    """Smooth (and optionally differentiate) data with a Savitzky-Golay filter.
+    The Savitzky-Golay filter removes high frequency noise from data.
+    It has the advantage of preserving the original shape and
+    features of the signal better than other types of filtering
+    approaches, such as moving averages techniques.
+
+    Parameters
+    ----------
+    y : array_like, shape (N,)
+        the values of the time history of the signal.
+        window_size : int
+        the length of the window. Must be an odd integer number.
+    polyorder : int
+        The order of the polynomial used to fit the samples. polyorder must be less than window_length.
+    deriv : int, optional
+        The order of the derivative to compute. This must be a nonnegative integer. The default is 0, which means to
+        filter the data without differentiating.
+    delta : float, optional
+        The spacing of the samples to which the filter will be applied. This is only used if deriv > 0. Default is 1.0.
+    axis : int, optional
+        The axis of the array x along which the filter is to be applied. Default is -1.
+    mode : str, optional
+        Must be 'mirror', 'constant', 'nearest', 'wrap' or 'interp'. This determines the type of extension to use for
+        the padded signal to which the filter is applied. When mode is 'constant', the padding value is given by cval.
+        See the Notes for more details on 'mirror', 'constant', 'wrap', and 'nearest'. When the 'interp' mode is
+        selected (the default), no extension is used. Instead, a degree polyorder polynomial is fit to the last
+        window_length values of the edges, and this polynomial is used to evaluate the last
+        window_length // 2 output values.
+    cval : scalar, optional
+        Value to fill past the edges of the input if mode is 'constant'. Default is 0.0
+
+    Returns
+    -------
+    ys : ndarray, shape (N)
+        the smoothed signal (or it's n-th derivative).
+
+    Notes
+    -----
+    The Savitzky-Golay is a type of low-pass filter, particularly
+    suited for smoothing noisy data. The main idea behind this
+    approach is to make for each point a least-square fit with a
+    polynomial of high order over a odd-sized window centered at
+    the point.
+
+    Examples
+    --------
+    t = np.linspace(-4, 4, 500)
+    y = np.exp( -t**2 ) + np.random.normal(0, 0.05, t.shape)
+    ysg = savitzky_golay(y, window_size=31, order=4)
+    import matplotlib.pyplot as plt
+    plt.plot(t, y, label='Noisy signal')
+    plt.plot(t, np.exp(-t**2), 'k', lw=1.5, label='Original signal')
+    plt.plot(t, ysg, 'r', label='Filtered signal')
+    plt.legend()
+    plt.show()
+
+    References
+    ----------
+    .. [1] A. Savitzky, M. J. E. Golay, Smoothing and Differentiation of
+        Data by Simplified Least Squares Procedures. Analytical
+        Chemistry, 1964, 36 (8), pp 1627-1639.
+    .. [2] Numerical Recipes 3rd Edition: The Art of Scientific Computing
+        W.H. Press, S.A. Teukolsky, W.T. Vetterling, B.P. Flannery
+        Cambridge University Press ISBN-13: 9780521880688
+    """
+    from scipy.signal import savgol_filter
+    return savitzky_golay(y, window_size, polyorder, deriv=deriv, delta=delta, axis=axis,
+                          mode=mode, cval=cval)

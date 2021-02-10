@@ -164,7 +164,7 @@ def lines_intersect_which_lines_2d(lines):
 
     Returns
     -------
-    intrx : dict
+    intrx : dict with keys as ints and vals as tuples
         for each line (specified by the int index as a key), give list of which lines it does intersect
         (int val[0][i]), and where is the intersection (2 x 1 float array val[1][i])
     """
@@ -178,6 +178,49 @@ def lines_intersect_which_lines_2d(lines):
             b1 = np.array([lines[jj][0], lines[jj][1]])
             b2 = np.array([lines[jj][2], lines[jj][3]])
             inx = intersection_lines(a1, a2, b1, b2)
+            if inx is not None:
+                if ind not in intrxs:
+                    intrxs[ind] = ([jj], [inx])
+                else:
+                    intrxs[ind][0].append(jj)
+                    intrxs[ind][1].append(inx)
+                if jj not in intrxs:
+                    intrxs[jj] = ([ind], [inx])
+                else:
+                    intrxs[jj][0].append(ind)
+                    intrxs[jj][1].append(inx)
+
+        # next time around, ignore previous lines
+        ind += 1
+
+    return intrxs
+
+
+def linesegs_intersect_which_linesegs_2d(linesegs):
+    """Find the intersection points of all pairs of intersecting linesegments, with a dict giving which lines are
+    connected to which.
+
+    Parameters
+    ----------
+    linesegs : N x 4 float array
+        Each row is a linesegment defined by two endpoints: lines[0] = np.array([x0, y0, x1, y1])
+
+    Returns
+    -------
+    intrx : dict with keys as ints and vals as tuples
+        for each linesegment (specified by the int index as a key), give list of which linesegments it does intersect
+        (int val[0][i]), and where is the intersection (2 x 1 float array val[1][i])
+    """
+    intrxs = {}
+    ind = 0
+    for lseg in linesegs:
+        a1 = np.array([lseg[0], lseg[1]])
+        a2 = np.array([lseg[2], lseg[3]])
+        # Note here that we avoid repeating intersection computations by ignoring all previously examined lines
+        for jj in range(ind + 1, len(linesegs)):
+            b1 = np.array([linesegs[jj][0], linesegs[jj][1]])
+            b2 = np.array([linesegs[jj][2], linesegs[jj][3]])
+            inx = intersection_linesegs(a1, a2, b1, b2)
             if inx is not None:
                 if ind not in intrxs:
                     intrxs[ind] = ([jj], [inx])

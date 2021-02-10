@@ -9,6 +9,11 @@ import sys
 import scipy.stats as scistat
 import copy
 import lepm.line_segments as linsegs
+from lepm.data_handling import dist_pts
+import h5py
+import lepm.dataio as dio
+import lepm.hdf5io as h5io
+import glob
 try:
     import cPickle as pickle
 except ImportError:
@@ -37,6 +42,10 @@ def param2meshfnexten_name(param):
         mfestr = 'Vpin'
     elif param == 'V0_pin_flat':
         mfestr = 'Vfpin'
+    elif param == 'percolation_density':
+        mfestr = 'perd'
+    elif param == 'OmKspec':
+        mfestr = param
     else:
         raise RuntimeError('Have not yet supported this parameter in string conversion -- add line for it here.')
     return mfestr
@@ -117,6 +126,7 @@ def dynamical_matrix_gyros(glat, basis=None):
                 print 'phitwist = ', phitwist
                 if glat.lp['periodic_strip']:
                     # All periodic bonds are twisted
+                    print 'glatfns: computing dynamical matrix for periodic strip here'
                     matrix = calc_dynamical_matrix_gyros_twist(glat.lattice.xy, glat.lattice.NL, glat.lattice.KL,
                                                                glat.OmK, glat.Omg, thetatwist, phitwist,
                                                                glat.lattice.PVx, glat.lattice.PVy, glat.lattice.PV)
@@ -146,8 +156,12 @@ def dynamical_matrix_gyros(glat, basis=None):
     elif basis == 'psi':
         '''Compute the dynamical matrix using the basis of clockwise and counter-clockwise oscillating modes'''
         if notwist:
-            matrix = calc_dynamical_matrix_psi(glat.lattice.xy, glat.lattice.NL, glat.lattice.NL, glat.OmK, glat.Omg,
-                                               glat.lattice.PVx, glat.lattice.PVy)
+            # matrix = calc_dynamical_matrix_psi(glat.lattice.xy, glat.lattice.NL, glat.lattice.KL, glat.OmK, glat.Omg,
+            #                                    glat.lattice.PVx, glat.lattice.PVy)
+
+            import lepm.gyro_lattice_kspace_functions as glatkspace_fns
+            matrix = glatkspace_fns.dynamical_matrix_kspace([0., 0.], glat, eps=1e-9, basis=basis, verbose=False)
+
         else:
             raise RuntimeError('Have not handled twisted psi-basis case yet')
 
@@ -329,12 +343,12 @@ def calc_dynamical_matrix_gyros_twist(xy, NL, KL, OmK, Omg, thetatwist, phitwist
     m2_shape = np.shape(M2)
 
     # Unpack periodic boundary vectors
-    if PVxydict is not None:
-        print '\n\n\n\n lattice_elasticity: dynamical_matrix_gyros: unpacking PVxydict...\n\n\n\n'
-        PVx, PVy = le.PVxydict2PVxPVy(PVxydict, NL)
-    else:
-        PVx = np.zeros((NP, NN), dtype=float)
-        PVy = np.zeros((NP, NN), dtype=float)
+    # if PVxydict is not None:
+    #     print '\n\n\n\n lattice_elasticity: dynamical_matrix_gyros: unpacking PVxydict...\n\n\n\n'
+    #     PVx, PVy = le.PVxydict2PVxPVy(PVxydict, NL)
+    # else:
+    #     PVx = np.zeros((NP, NN), dtype=float)
+    #     PVy = np.zeros((NP, NN), dtype=float)
 
     print 'Constructing dynamical matrix...'
     for i in range(NP):
@@ -359,6 +373,9 @@ def calc_dynamical_matrix_gyros_twist(xy, NL, KL, OmK, Omg, thetatwist, phitwist
                 alphaij = 0.
 
                 # Obtain twist factor if the bond is a periodic one
+                # print 'glatfns: PVx[i, nn] = ', PVx[i, nn]
+                # print 'glatfns: PVy[i, nn] = ', PVy[i, nn]
+                # print 'glatfns: PVx = ', PVx
                 if KL[i, nn] < 0.:
                     # form the array of the periodic vector from j to j's reflection as seen by i
                     arrpvj = np.array([PVx[i, nn], PVy[i, nn]])
@@ -813,6 +830,8 @@ def get_twist_angle(arrpv, PV, thetatwist, phitwist=None):
             # Crossing both periodic vectors -- bottom left
             twistangle = -thetatwist - phitwist
         else:
+            print 'PV = ', PV
+            print 'arrpv = ', arrpv
             raise RuntimeError('Found periodic vector with PVx,y which do not match linear combo of PV')
     elif np.shape(PV) in [(1, 2), (2, 1), (2,)]:
         # There is only one peridic lattice vector (as for a periodic strip).
@@ -1019,30 +1038,35 @@ def calc_dynamical_matrix_gyros_stretched(xy, BL, NL, KL, OmK, Omg, bL, PVx, PVy
 
 def calc_dynamical_matrix_psi(xy, NL, KL, OmK, Omg, PVx, PVy):
     """Calculates the matrix for finding the normal modes of the system
-    Assumes that all bonds are unit length (Is this true?)
     OmK and Omg are signed with reference to positive for b=0, c=1.
     In other words, if OmK and Omg are positive, then the gyros are hanging and spinning with dir aligned with body axis 3.
 
     Parameters
     ----------
-    R : NP x 2 float array
+    xy : NP x 2 float array
+        2D positions of points (positions x,y). Row i is the x,y position of the ith particle. In other words, the index
+        of each particle is given by its row, using zero-indexing (the first particle is particle 0).
     NL : array of dimension #pts x max(#neighbors)
         The ith row contains indices for the neighbors for the ith point, buffered by zeros if a particle does not have the
         maximum # nearest neighbors. KL can be used to discriminate a true 0-index neighbor from a buffered zero.
     KL : NP x NN int array
-
+        spring connection/constant list, where 1 corresponds to a true connection,
+        0 signifies that there is not a connection, -1 signifies periodic bond
     OmK : float or NP x NN array
         k*l**2/I3*omega3, if 'auto', then computes quantity from params
     Omg : float or NP x 1 array
         l*gn/I3*omega3, if 'auto', then computes quantity from params
-    PVx :
-    PVy :
+    PVx : NP x NN float array (optional, for periodic lattices)
+        ijth element of PVx is the x-component of the vector taking NL[i,j] to its image as seen by particle i
+    PVy : NP x NN float array (optional, for periodic lattices)
+        ijth element of PVy is the y-component of the vector taking NL[i,j] to its image as seen by particle i
 
     Returns
     ----------
     D : 2*NP x 2*NP complex array
         Dynamical matrix in psi^R and psi^L basis
     """
+    RuntimeError('This seems not quite right somehow. The discrepancy is small...')
     try:
         NP, NN = np.shape(NL)
     except:
@@ -1053,8 +1077,8 @@ def calc_dynamical_matrix_psi(xy, NL, KL, OmK, Omg, PVx, PVy):
     M1 = np.zeros((2 * NP, 2 * NP), dtype=complex)
     M2 = np.zeros((2 * NP, 2 * NP), dtype=complex)
 
-    print ' Supplied Omg = ', Omg
-    print ' Supplied OmK = ', OmK
+    # print ' Supplied Omg = ', Omg
+    # print ' glatfns: Supplied PVx = ', PVx
 
     print 'Constructing dynamical matrix...'
     for ii in range(NP):
@@ -1065,14 +1089,28 @@ def calc_dynamical_matrix_psi(xy, NL, KL, OmK, Omg, PVx, PVy):
         M2[NP + ii, NP + ii] += -omg
 
         for nn in range(NN):
-            ni = NL[ii, nn]  # the number of the gyroscope i is connected to (particle j)
-            k = KL[ii, nn]  # true connection?
-            omk = OmK[ii, nn]  # spring frequency for this connection
+            # the number of the gyroscope i is connected to (particle j)
+            ni = NL[ii, nn]
+            # If particle nn is connected to ni, then |k| > 0 --> it is a true connection
+            k = KL[ii, nn]
+            # spring frequency for this connection
+            omk = OmK[ii, nn]
 
-            if abs(k) > 1e-14:
+            # if ii == 2:
+            #     print 'NL = ', NL
+            #     print 'KL = ', KL
+            #     print 'OmK = ', OmK
+            #     sys.exit()
+
+            if abs(k) > 1e-10:
                 # There is a true connection, so update dynamical matrix
-                diffx = xy[ni, 0] - xy[ii, 0] + PVx[ii, nn]
-                diffy = xy[ni, 1] - xy[ii, 1] + PVy[ii, nn]
+                if PVx is None and PVy is None:
+                    diffx = xy[ni, 0] - xy[ii, 0]
+                    diffy = xy[ni, 1] - xy[ii, 1]
+                else:
+                    diffx = xy[ni, 0] - xy[ii, 0] + PVx[ii, nn]
+                    diffy = xy[ni, 1] - xy[ii, 1] + PVy[ii, nn]
+
                 alphaij = np.arctan2(diffy, diffx)
 
                 ei2theta = np.exp(1j * 2. * alphaij)
@@ -1094,9 +1132,10 @@ def calc_dynamical_matrix_psi(xy, NL, KL, OmK, Omg, PVx, PVy):
                 M1[NP + ii, NP + ii] += -omk  # psi_i R
                 M1[NP + ii, NP + ni] += omk  # psi_j R
 
-    # Assumes that b=0, c=1 so that:
+    # Assumes that b=0, c=1 (ie hanging gyroscope with angular momentum pointing down) so that:
     # (-1)**c adot =  spring* (-1)**(b+1) (-Fy,Fx)  - pin (dY,-dX)
     # (dXdot, dYdot) = - spring (-Fy,Fx)  - pin (dY,-dX)
+    # d/dt(psiL, psiR) = - spring (-Fy,Fx)  - pin (dY,-dX)
     D = -0.5 * M1 - M2
 
     # divide by i (ie sqrt(-1))
@@ -1213,20 +1252,23 @@ def OmK_spec_gridlines(lat, lp, gridspacing, maxval, strongbond_val, weakbond_va
     return OmK
 
 
-def build_OmK(lattice, lp, OmK):
+def build_OmK(lattice, lp, OmK, eps=1e-9):
     """Construct OmK from supplied OmK (may be None or 'none') and lattice parameter dictionary lp
 
     Parameters
     ----------
     lattice : lattice_class.Lattice() instance
     OmK : N x max(#NN) float array or None or 'none'
-        bond frequencies matching the KL and NL arrays, with bonds weakened along gridlines
+        bond frequencies matching the KL and NL arrays, possibly with bonds weakened along gridlines or other OmKspec
     lp : dict
         lattice parameter dictionary
+    eps : float
+        minimum value of abs(KL) to be considered true connection, used in OmKspec applications
 
     Returns
     -------
-    OmK :
+    OmK : N x max(#NN) float array
+        bond frequencies matching the KL and NL arrays
     lp_Omk : float
         value for key 'Omk' to be added to lp
     lp_meshfn_exten : str
@@ -1238,6 +1280,7 @@ def build_OmK(lattice, lp, OmK):
         if 'OmKspec' in lp:
             if lp['OmKspec'] not in ['', 'none', None]:
                 if 'gridlines' in lp['OmKspec']:
+                    # Weaken bonds along gridlines
                     # Here, OmKspec must be of the form:
                     # 'gridlines{0:0.2f}'.format(gridspacing).replace('.', 'p') + \
                     # 'strong{0:0.3f}'.format(lp['Omk']).replace('.', 'p').replace('-', 'n') + \
@@ -1248,6 +1291,45 @@ def build_OmK(lattice, lp, OmK):
                     weak = float(spec.split('weak')[1].replace('p', '.').replace('n', '-'))
                     maxval = max(np.max(np.abs(lattice.xy[:, 0])), np.max(np.abs(lattice.xy[:, 1]))) + 1
                     OmK = OmK_spec_gridlines(lattice, lp, gridspacing, maxval, strong, weak)
+                elif 'PVbondfactor' in lp['OmKspec']:
+                    # reduce/magnify hoppings across periodic vectors by the float given as string in PVfactor
+                    OmK = lp['Omk'] * np.abs(lattice.KL.astype('float'))
+                    # print 'glatfns: OmK = ', OmK
+                    # print 'glatfns: lattice.KL = ', lattice.KL
+                    # print lp['OmKspec']
+                    pvfactor = float(lp['OmKspec'].split('PVbondfactor')[-1].replace('p', '.').replace('n', '-'))
+                    # print 'glatfns: pvfactor = ', pvfactor
+                    OmK[np.where(lattice.KL < -0.1)] *= pvfactor
+                    # print 'glatfns: OmK = ', OmK
+                    # raise RuntimeError('here')
+                elif 'union' in lp['OmKspec']:
+                    # Here, OmKspec must be of the form 'unionn0p100in0p2000 to make bonds connecting points a distance
+                    # of less than 0.2 away from each other have strength -0.100
+                    # Tune the bond strength of bonds connecting points which lie at the same location in space
+                    # Now prepare the value to which to tune these bonds
+                    specval = sf.str2float(lp['OmKspec'].split('union')[-1].split('in')[0])
+                    specdist = sf.str2float(lp['OmKspec'].split('union')[-1].split('in')[-1])
+                    # First, find points that lie at the same location in space.
+                    dists = dist_pts(lattice.xy, lattice.xy, square_norm=True) + np.identity(len(lattice.xy))
+                    rowcols = np.where(dists < specdist)
+                    # print 'dists = ', dists
+                    # print 'specdist = ', specdist
+                    # print 'dists < specdist = ', dists < specdist
+                    pts, nbrs = rowcols[0], rowcols[1]
+                    # print 'rowcols = ', rowcols
+                    # print 'OmKspec = ', lp['OmKspec']
+                    # print 'specval = ', specval
+                    # Place this value for bonds between points on the same site
+                    OmK = lp['Omk'] * np.abs(lattice.KL.astype('float'))
+                    for (pt, nbr) in zip(pts, nbrs):
+                        # Find where NL[pt] has neighbor nbrs, tune that OmK to the specified value
+                        omkcol = np.where(np.logical_and(lattice.NL[pt] == nbr, np.abs(lattice.KL[pt]) > eps))[0]
+                        OmK[pt, omkcol] = specval
+                    # print 'BL = ', lattice.BL
+                    # print 'NL = ', lattice.NL
+                    # print 'KL = ', lattice.KL
+                    # print 'OmK = ', OmK
+                    # sys.exit()
                 else:
                     raise RuntimeError('OmKspec in lp cannot be translated into OmK, must supply OmK or edit to' +
                                        ' interpret given OmKspec')
@@ -1410,7 +1492,7 @@ def ascribe_absites(lat):
             bsites[flip] = True
         done[todo] = True
 
-        print 'todo = ', todo
+        print 'glatfns.ascribe_absites(): todo = ', todo
         todo = np.where(np.logical_and(bsites, ~done))[0]
         for ii in todo:
             flip = np.setdiff1d(np.setdiff1d(NL[ii][np.where(KL[ii])[0]], np.where(asites)[0]),
@@ -1428,6 +1510,288 @@ def ascribe_absites(lat):
             dmyi += 1
 
     return asites, bsites
+
+
+def load_pin_spec(glat):
+    """Load Omg values given Omgspec string in glat.lp['Omgspec']
+
+    Parameters
+    ----------
+    glat : GyroLattice instance
+        the gyro lattice for which to load the pinning configuration
+
+    Returns
+    -------
+    omg_values : NP x 1 float array
+        The pinning frequencies for this Omg specification in glat.lp['Omgspec']
+    """
+    meshfn = glat.lp['meshfn']
+    with h5py.File(dio.prepdir(meshfn) + 'omg_configs.hdf5', "r") as fi:
+        specname = glat.lp['Omgspec']
+        inhdf5 = specname in fi.keys()
+        if inhdf5:
+            omg_values = fi[specname][:]
+            load_from_txt = False
+            print 'glatfns.load_vpin_gauss(): loaded Omgspec from hdf5, returning '
+        else:
+            load_from_txt = True
+
+    if load_from_txt:
+        print 'could not find Omgspec pinning config from hdf5, opening pinning configs from txt...'
+        specname = 'Omg_' + glat.lp['Omgspec']
+        omg_values = np.loadtxt(dio.prepdir(meshfn) + specname + '.txt')
+
+    # print 'omg_values = ', omg_values
+    # print 'glatfns: exiting'
+    # sys.exit()
+
+    return omg_values
+
+
+def load_vpin_gauss(glat):
+    """Load the disorder configuration specified by glat.lp['pinconf']
+
+    Parameters
+    ----------
+    glat : GyroLattice instance
+        the gyro lattice for which to load the pinning configuration due to disorder (to be added to glat.Omg)
+
+    Returns
+    -------
+    add : len(NP) float array
+        the offsets to the pinning frequencies determined by deltacorrelated disorder, with magnitude determined by
+        glat.lp['V0_pin_gauss'] --- ie, gaussian of standard deviation given by glat.lp['V0_pin_gauss']
+    """
+    meshfn = glat.lp['meshfn']
+    h5omg_file = dio.prepdir(meshfn) + 'omg_configs.hdf5'
+    if glob.glob(h5omg_file):
+        if abs(glat.lp['V0_pin_gauss']) > 1e-10:
+            with h5py.File(h5omg_file, "r") as fi:
+                dcdname = 'pinV_gauss_conf{0:04d}'.format(int(glat.lp['pinconf']))
+                inhdf5 = dcdname in fi.keys()
+                if inhdf5:
+                    addomg = fi[dcdname][:]
+                    add = glat.lp['V0_pin_gauss'] * addomg
+                    load_from_txt = False
+                    print 'glatfns.load_vpin_gauss(): loaded Vpin_gauss from hdf5, returning '
+                else:
+                    add = np.zeros_like(glat.lattice.xy[:, 0])
+                    addomg = copy.deepcopy(add)
+                    load_from_txt = True
+        else:
+            add = np.zeros_like(glat.lattice.xy[:, 0])
+            addomg = copy.deepcopy(add)
+            load_from_txt = False
+    else:
+        load_from_txt = True
+
+    if load_from_txt:
+        print 'could not find vpin pinning config from hdf5, opening pinning configs from txt...'
+        dcdname = 'pinV_conf{0:04d}'.format(int(glat.lp['pinconf']))
+        addomg = np.loadtxt(dio.prepdir(meshfn) + dcdname + '.txt')
+        add = glat.lp['V0_pin_gauss'] * addomg
+
+    return add, addomg
+
+
+def load_omgspec(glat):
+    """
+
+    Parameters
+    ----------
+    glat
+
+    Returns
+    -------
+
+    """
+    if 'dab' in glat.lp['Omgspec'] and 'posneg' in glat.lp['Omgspec']:
+        dabval = float(glat.lp['Omgspec'].split('dab')[-1].split('posneg')[0].replace('p', '.'))
+        omg_values = glat.lp['Omg'] * np.ones_like(glat.lattice.xy[:, 0])
+        omg_values[np.where(glat.lattice.xy[:, 1] > 0)] += dabval
+        omg_values[np.where(glat.lattice.xy[:, 1] < 0)] -= dabval
+    elif 'dab' in glat.lp['Omgspec'] and 'union' in glat.lp['Omgspec']:
+        dabval = float(glat.lp['Omgspec'].split('dab')[-1].split('union')[0].replace('p', '.'))
+        omg_values = glat.lp['Omg'] * np.ones_like(glat.lattice.xy[:, 0])
+        omg_values[np.where(glat.lattice.xy[:, 1] > 0)] += dabval
+        omg_values[np.where(glat.lattice.xy[:, 1] < 0)] -= dabval
+        # Here, OmKspec must be of the form 'union0p2000 to make sites that are less than 0.2 away from each other have
+        # the same pinning strength.
+        # Now prepare the value to which to tune these sites
+        print 'glat.lp[Omgspec].split(union)[-1] = ', glat.lp['Omgspec'].split('union')[-1]
+        specdist = sf.str2float(glat.lp['Omgspec'].split('union')[-1])
+        # First, find points that lie at the same location in space.
+        dists = dist_pts(glat.lattice.xy, glat.lattice.xy, square_norm=True) + np.identity(len(glat.lattice.xy))
+        rowcols = np.where(dists < specdist)
+        pts, nbrs = rowcols[0], rowcols[1]
+        # Keep track of which sites have been labeled as A or B
+        done = np.zeros(len(glat.lattice.xy[:, 0]), dtype=int)
+        pt = pts[0]
+        nbr = nbrs[np.where(pts==pt)[0]]
+
+        # Prepare array
+        omg_values = glat.lp['Omg'] * np.ones_like(glat.lattice.xy[:, 0])
+        addomg = np.zeros_like(omg_values)
+        abval = dabval
+        # Find where NL[pt] has neighbor nbrs, tune that OmK to the specified value
+        addomg[pt] = abval
+        addomg[nbr] = abval
+        asites, bsites = [pt], []
+        for nn in nbr:
+            asites.append(nn)
+
+        # mark as ID'd
+        done[pt] = 1
+        done[nbr] = 1
+        if glat.lp['check']:
+            print 'pts = ', pts
+            print 'nbrs = ', nbrs
+            print 'done = ', done
+            print 'asites = ', asites
+            print 'bsites = ', bsites
+
+        while not done.all():
+            abval = -abval
+            new_info = False
+            # next do these guys' neighbors (the neighbors of the sites we just looked at)
+            if glat.lp['check']:
+                print 'pt = ', pt
+                print 'nbr = ', nbr
+            
+            for site in np.hstack((np.array([pt]), nbr)):
+                # Allow a mechanism to catch the case where all neighbors have been accounted for
+                for neibr in glat.lattice.NL[site, np.where(np.abs(glat.lattice.KL[pt]))[0]]:
+                    if not done[neibr]:
+                        addomg[neibr] = abval
+                        # do nearby sites of neibr, which we call 'group'
+                        group = nbrs[np.where(pts == neibr)[0]]
+                        addomg[group] = abval
+                        # mark these as done
+                        done[neibr] = 1
+                        done[group] = 1
+                        if abval > 0:
+                            asites.append(neibr)
+                            for nn in group:
+                                asites.append(nn)
+                        else:
+                            bsites.append(neibr)
+                            for nn in group:
+                                bsites.append(nn)
+
+                        if glat.lp['check']:
+                            # check it
+                            sm = plt.scatter(glat.lattice.xy[:, 0], glat.lattice.xy[:, 1], c=addomg, lw=0, cmap='seismic')
+                            # plt.colorbar(sm)
+                            plt.pause(.1)
+
+                        pt = neibr
+                        nbr = group
+                        new_info = True
+
+            # Catch the case where all the neighbors have already been done for the current site
+            if not new_info:
+                print 'flipping coin to jump to new previously done site'
+                coinflip = np.random.random()
+                if coinflip < 0.5:
+                    # pick an A site at random
+                    asite_ind = np.random.choice(len(asites), 1)[0]
+                    pt = asites[asite_ind]
+                    nbr = nbrs[np.where(pts == pt)[0]]
+                    # flib abval to be Asite abval since the next treated sites will be B sites
+                    abval = dabval
+                    # print 'asites = ', asites
+                    # print 'glatfns: picked asite: pt = ', pt
+                    # print 'glatfns: picked asite: nbr = ', nbr
+                else:
+                    # pick a B site at random
+                    bsite_ind = np.random.choice(len(bsites), 1)[0]
+                    pt = bsites[bsite_ind]
+                    nbr = nbrs[np.where(pts == pt)[0]]
+                    # flib abval to be Bsite abval since the next treated sites will be A sites
+                    abval = - dabval
+                    # print 'bsites = ', bsites
+                    # print 'glatfns: picked bsite: pt = ', pt
+                    # print 'glatfns: picked bsite: nbr = ', nbr
+
+        omg_values += addomg
+
+    # print 'inspecting coloration of AB neighbors for Omgspec'
+    # sm = plt.scatter(glat.lattice.xy[:, 0], glat.lattice.xy[:, 1], c=addomg, lw=0, cmap='seismic')
+    # plt.show()
+    # sys.exit()
+
+    return omg_values
+
+
+def load_abdelta(glat):
+    """Load the disorder configuration specified by glat.lp['pinconf']
+
+    Parameters
+    ----------
+    glat : GyroLattice instance
+        the gyro lattice for which to load the pinning configuration due to disorder (to be added to glat.Omg)
+
+    Returns
+    -------
+    add : len(NP) float array
+        the offsets to the pinning frequencies determined by deltacorrelated disorder, with magnitude determined by
+        glat.lp['V0_pin_gauss'] --- ie, gaussian of standard deviation given by glat.lp['V0_pin_gauss']
+    """
+    meshfn = glat.lp['meshfn']
+    with h5py.File(dio.prepdir(meshfn) + 'omg_configs.hdf5', "r") as fi:
+        if np.abs(glat.lp['ABDelta']) > 1e-10:
+            abname = 'ABDelta'
+            inhdf5 = abname in fi.keys()
+            if inhdf5:
+                add = glat.lp['ABDelta'] * fi[abname][:]
+                load_from_txt = False
+            else:
+                add = np.zeros_like(glat.lattice.xy[:, 0])
+                load_from_txt = True
+        else:
+            add = np.zeros_like(glat.lattice.xy[:, 0])
+            load_from_txt = False
+
+    if load_from_txt:
+        print 'glatfns: could not find abdelta pinning config from hdf5, opening pinning configs from txt...'
+        abname = 'ABDelta'
+        add = glat.lp['ABDelta'] * np.loadtxt(dio.prepdir(meshfn) + abname + '.txt')
+
+    return add
+
+
+def save_vpin_gauss(glat, addomg, force_hdf5=True):
+    """"""
+    meshfn = glat.lp['meshfn']
+    dcdname = 'pinV_gauss_conf{0:04d}'.format(int(glat.lp['pinconf']))
+    if force_hdf5:
+        # First check that doesn't already exist
+        hdf5fn = dio.prepdir(meshfn) + 'omg_configs.hdf5'
+        h5io.dset_in_hdf5(dcdname, hdf5fn)
+        # Save to hdf5
+        h5io.save_dset_hdf5(addomg, dcdname, hdf5fn, overwrite=False)
+        print 'saved ' + dcdname + ' to hdf5'
+    else:
+        # save to text file, as pinV_conf0023.txt
+        np.savetxt(meshfn + 'pinV_gauss_conf{0:04d}'.format(int(glat.lp['pinconf'])) + '.txt', addomg)
+        print 'saved ' + dcdname + '.txt to disk'
+
+
+def save_abdelta(glat, addomg, force_hdf5=True):
+    """"""
+    meshfn = glat.lp['meshfn']
+    abname = 'ABDelta'
+    if force_hdf5:
+        # First check that doesn't already exist
+        hdf5fn = dio.prepdir(meshfn) + 'omg_configs.hdf5'
+        h5io.dset_in_hdf5(dcdname, hdf5fn)
+        # Save to hdf5
+        h5io.save_dset_hdf5(addomg, abname, hdf5fn, overwrite=False)
+        print 'saved ' + abname + ' to hdf5'
+    else:
+        # save to text file, as pinV_conf0023.txt
+        np.savetxt(meshfn + 'ABDelta.txt', addomg)
+        print 'saved ' + abname + '.txt to disk'
 
 
 def delta_eo(eta, omega, omegaj):
@@ -1514,7 +1878,7 @@ def calc_ldos(eigval, eigvect, eps=5.0):
     return ldos
 
 
-def calc_magevecs(eigvect):
+def calc_magevecs(eigvect, basis='XY'):
     """Compute the magnitude of the second half of all eigenvectors, by norming their x and y components in quad
 
     Parameters
@@ -1523,6 +1887,8 @@ def calc_magevecs(eigvect):
         eigenvectors of the matrix, sorted by order of imaginary components of eigvals
         Eigvect is stored as NModes x NP*2 array, with x and y components alternating, like:
         x0, y0, x1, y1, ... xNP, yNP.
+    basis : str ('XY', 'psi')
+            string specifier for which basis the eigvect is constructed in
 
     Returns
     -------
@@ -1530,17 +1896,87 @@ def calc_magevecs(eigvect):
         The magnitude of the upper half of eigenvectors at each site. magevecs[i, j] is the magnitude of the i+NP
         normal mode at site j.
     """
-    if len(np.shape(eigvect)) == 1:
-        raise RuntimeError('Supplied eigvect must be 2d')
+    if basis == 'XY':
+        if len(np.shape(eigvect)) == 1:
+            raise RuntimeError('Supplied eigvect must be 2d')
 
-    halfevec = eigvect[int(len(eigvect) * 0.5):]
+        halfevec = eigvect[int(len(eigvect) * 0.5):]
 
-    # Contract x and y component of each evect so that len(halfevec[ii]) = NP
-    magevecs = np.zeros((len(halfevec), len(halfevec)), dtype=float)
-    jj = 0
-    for row in halfevec:
-        magevecs[jj] = np.array([np.sqrt(np.abs(row[2 * ii]) ** 2 + np.abs(row[2 * ii + 1]) ** 2)
-                                for ii in np.arange(0, int(len(eigvect) * 0.5))])
-        jj += 1
+        # Contract x and y component of each evect so that len(halfevec[ii]) = NP
+        magevecs = np.zeros((len(halfevec), len(halfevec)), dtype=float)
+        jj = 0
+        for row in halfevec:
+            magevecs[jj] = np.array([np.sqrt(np.abs(row[2 * ii]) ** 2 + np.abs(row[2 * ii + 1]) ** 2)
+                                    for ii in np.arange(0, int(len(eigvect) * 0.5))])
+            jj += 1
+    elif basis == 'psi':
+        if len(np.shape(eigvect)) == 1:
+            raise RuntimeError('Supplied eigvect must be 2d')
+
+        halflen = int(len(eigvect) * 0.5)
+        halfevec = eigvect[halflen:]
+
+        # Contract x and y component of each evect so that len(halfevec[ii]) = NP
+        magevecs = np.zeros((len(halfevec), len(halfevec)), dtype=float)
+        jj = 0
+        for row in halfevec:
+            magevecs[jj] = np.array([np.sqrt(np.abs(row[ii]) ** 2 + np.abs(row[ii + halflen]) ** 2)
+                                     for ii in np.arange(0, halflen)])
+            jj += 1
+    else:
+        raise RuntimeError('Basis not recognized')
+    return magevecs
+
+
+def calc_magevecs_full(eigvect, basis='XY'):
+    """Compute the magnitude of the ALL supplied eigenvectors, by norming their x and y components in quad
+
+    Parameters
+    ----------
+    eigvect : M x 2*N complex array
+        eigenvectors or some eigenvectors, in any order
+        Typically eigvect is stored as NModes x NP*2 array, with x and y components alternating, like:
+        x0, y0, x1, y1, ... xNP, yNP.
+    basis : str ('XY', 'psi')
+        string specifier for which basis the eigvect is constructed in
+
+    Returns
+    -------
+    magevecs : M x #particles float array
+        The magnitude of all supplied eigenvectors at each site. magevecs[i, j] is the magnitude of the i+NP
+        normal mode at site j.
+    """
+    if basis == 'XY':
+        if len(np.shape(eigvect)) == 1:
+            halflen = int(0.5 * len(eigvect))
+            magevecs = np.array([np.sqrt(np.abs(eigvect[2 * ii]) ** 2 + np.abs(eigvect[2 * ii + 1]) ** 2)
+                                 for ii in np.arange(0, halflen)])
+        else:
+            # Contract x and y component of each evect so that len(magevec[ii]) = NP
+            halflen = int(0.5 * np.shape(eigvect)[1])
+            magevecs = np.zeros((np.shape(eigvect)[0], halflen), dtype=float)
+            jj = 0
+            for row in eigvect:
+                magevecs[jj] = np.array([np.sqrt(np.abs(row[2 * ii]) ** 2 + np.abs(row[2 * ii + 1]) ** 2)
+                                         for ii in np.arange(0, halflen)])
+                jj += 1
+    elif basis == 'psi':
+        if len(np.shape(eigvect)) == 1:
+            halflen = int(0.5 * len(eigvect))
+            magevecs = np.array([np.sqrt(np.abs(eigvect[ii]) ** 2 + np.abs(eigvect[ii + halflen]) ** 2)
+                                 for ii in np.arange(0, halflen)])
+        else:
+            # Contract x and y component of each evect so that len(magevec[ii]) = NP
+            halflen = int(0.5 * np.shape(eigvect)[1])
+            magevecs = np.zeros((np.shape(eigvect)[0], halflen), dtype=float)
+            jj = 0
+            for row in eigvect:
+                magevecs[jj] = np.array([np.sqrt(np.abs(row[ii]) ** 2 + np.abs(row[ii + halflen]) ** 2)
+                                         for ii in np.arange(0, halflen)])
+                jj += 1
+    else:
+        raise RuntimeError('Basis not recognized')
 
     return magevecs
+
+

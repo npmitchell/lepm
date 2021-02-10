@@ -2,6 +2,7 @@ import os
 import shutil
 import glob
 import numpy as np
+import lepm.stringformat as sf
 
 
 '''General use functions for input/output of data and files.
@@ -24,7 +25,7 @@ def ensure_dir(f):
     if not os.path.exists(d):
         print 'le.ensure_dir: creating dir: ', d
         os.makedirs(d)
-
+    return prepdir(d)
 
 def find_dir_with_name(name, searchdir):
     """Return a path or list of paths to directories which match the string 'name' (can have wildcards) in searchdir.
@@ -45,7 +46,7 @@ def find_dir_with_name(name, searchdir):
 def get_fname_and_index_size(hostdir):
     """Obtain the name of the first nontrivial file in a directory and the length of its numerical index.
     For example, if "hostdir/xyz00001.txt" exist, get_fname_and_index_size(hostdir) returns ('xyz', 5).
-    This function is robust to having '.'s in the filename.
+    This function is robust to having periods ('.') in the filename.
 
     Parameters
     ----------
@@ -243,6 +244,91 @@ def save_dict(Pdict, filename, header, keyfmt='auto', valfmt='auto', padding_var
                 # print 'isstr --> ', isinstance(Pdict[key], str)
                 myfile.write('{{0: <{}}}'.format(padding_var).format(str(key)) +
                              '= ' + '{0:0.18e}'.format(Pdict[key]) + '\n')
+
+
+def load_evaled_dict(outdir, paramsfn='parameters', ignore=None):
+    """Load dictionary from txt file in outdir. This is equivalent to lattice_elasticity.load_params()
+
+    Parameters
+    ----------
+    outdir: str
+        The path to the dictionary txt file. If ends in '.txt', then we will split outdir into outdir and paramsfn
+        accordingly. Thus, if paramsfn is supplied, outdir cannot be a (directory) string ending with '.txt'
+    paramsfn: str
+        The name of the txt file with the dictionary's key-value pairs to load, if outdir supplied is not the full path
+    ignore : list of str
+        keys to ignore in the loading of the parameters. For example, when loading a lattice_parameters.txt file for
+        creating a network, we want to ignore any physics, like interactions, pinning strength, etc. So we'd have
+        ignore = ['VO_pin_gauss', 'pin', 'Omg', etc]
+
+    Returns
+    -------
+    params: dict
+        A dictionary, with all datatypes preserved as best as possible from reading in txt file
+
+    """
+    params = {}
+    # If outdir is the entire path, it has .txt at end, and so use this to split it up into dir and filename
+    if outdir[-4:] == '.txt':
+        outsplit = outdir.split('/')
+        outdir = ''
+        for tmp in outsplit[:-1]:
+            outdir += tmp + '/'
+        paramsfn = outsplit[-1]
+
+    if '*' in outdir:
+        print 'outdir specified with wildcard, searching and taking first result...'
+        outdir = glob.glob(outdir)[0]
+
+    outdir = prepdir(outdir)
+    if paramsfn[-4:] != '.txt':
+        paramsfn += '.txt'
+    with open(outdir + paramsfn) as f:
+        # for line in f:
+        #     print line
+        for line in f:
+            if '# ' not in line:
+                (k, val) = line.split('=')
+                key = k.strip()
+                if key == 'date':
+                    val = val[:-1].strip()
+                    print '\nloading params for: date= ', val
+                elif sf.is_number(val):
+                    # val is a number, so convert to a float
+                    val = float(val[:-1].strip())
+                else:
+                    '''This should handle tuples without a problem'''
+                    try:
+                        # If val has both [] and , --> then it is a numpy array
+                        # (This is a convention choice.)
+                        if '[' in val and ',' in val:
+                            make_ndarray = True
+
+                        # val might be a list, so interpret it as such using ast
+                        # val = ast.literal_eval(val.strip())
+                        exec ('val = %s' % (val.strip()))
+
+                        # Make array if found '[' and ','
+                        if make_ndarray:
+                            val = np.array(val)
+
+                    except:
+                        # print 'type(val) = ', type(val)
+                        # val must be a string
+                        try:
+                            # val might be a list of strings?
+                            val = val[:-1].strip()
+                        except:
+                            '''val is a list with a single number'''
+                            val = val
+                if ignore is None:
+                    params[key] = val
+                elif key not in ignore:
+                    params[key] = val
+
+                # print val
+
+    return params
 
 
 def remove(path):

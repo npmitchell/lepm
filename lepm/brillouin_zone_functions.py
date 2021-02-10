@@ -10,7 +10,8 @@ Functions for finding the Brillouin zone from lattice points/vectors or reciproc
 
 
 def generate_bzpath(vtcs, npts=50):
-    """
+    """Build the path through the hexagonal or square BZ that traces out a characteristic
+    path in the BZ (like K-Gamma-M-K for hexagonal, or R-M1-Gamma-M2 for square).
 
     Parameters
     ----------
@@ -22,37 +23,109 @@ def generate_bzpath(vtcs, npts=50):
     kpts : (approx. npts) x 2 float array
         the path through the hexagonal or square BZ that traces out a characteristic
         path in the BZ (like K-Gamma-M-K for hexagonal, or R-M1-Gamma-M2 for square)
+    symmetryinds : list of ints
+        the indices of the parts of the path at the symmetry points Gamma, R, M1, M2, etc
     """
+    eps = 1e-10
     # build path from vtcs of BZ
+    if len(vtcs) == 7:
+        vtcs = vtcs[0:6, :]
+
     if len(vtcs) == 6:
         # build K-Gamma-M-K
         gammapoint = np.array([0., 0.])
         # for K point, get index of vtcs where both elements are positive
-        posxy = np.where(np.logical_and(vtcs[:, 0] > 0, vtcs[:, 1] > 0))[0]
+        posxy = np.where(np.logical_and(vtcs[:, 0] > eps, vtcs[:, 1] > eps))[0]
         if len(posxy) > 1:
             print 'vtcs = ', vtcs
-            raise RuntimeError('There are more than one vertices of the BZ that have positive x and y components.'
+            import matplotlib.pyplot as plt
+            plt.plot(vtcs[:, 0], vtcs[:, 1], 'k-')
+            plt.show()
+            raise RuntimeError('There are more than one vertices of the BZ that '
+                               'have positive x and y components. '
                                'Handle this case here')
+
         else:
             kpoint = vtcs[posxy]
-        # Find M point as the midpoint of the top linesegment of the BZ.
-        # First get where BZ vertices have third largest value for y, to get pts with larger y value than that
-        y3max = np.sort(vtcs[:, 1])[-3]
-        topy = np.where(vtcs[:, 1] > y3max)[0]
-        if len(topy) == 2:
-            mpoint = np.mean(vtcs[topy, :], axis=0)
-        else:
-            print 'vtcs = ', vtcs
-            print 'y3max = ', y3max
-            print 'topy = ', topy
-            raise RuntimeError('There are not simply two BZ vertex points with largest y values. Handle here.')
+            maxx = np.argmax(vtcs)
+            kprime = vtcs[maxx]
+
+            # Find M point as the midpoint of the top linesegment of the BZ.
+            # First get where BZ vertices have third largest value for y, to get
+            # pts with larger y value than that.
+            y3max = np.sort(vtcs[:, 1])[-3]
+            topy = np.where(vtcs[:, 1] > y3max)[0]
+            if len(topy) == 2:
+                mpoint = np.mean(vtcs[topy, :], axis=0)
+            else:
+                print 'vtcs = ', vtcs
+                print 'y3max = ', y3max
+                print 'topy = ', topy
+                raise RuntimeError('There are not simply two BZ vertex points with largest y values. Handle here.')
 
         # Build path as 4x4 array of 4 linesegments
-        path = np.vstack((kpoint, gammapoint, mpoint, kpoint))
+        path = np.vstack((kpoint, gammapoint, mpoint, kpoint, kprime, gammapoint))
     elif len(vtcs) == 4:
         # Build R-M1-Gamma-M2
         raise RuntimeError('Have not coded for square BZ path, do so here.')
+    else:
+        raise RuntimeError('Have not coded for BZ path with ' + str(len(vtcs)) + ' vertices')
 
+    # get total length, in order to estimate how many points to place along each segment of the path
+    nvtcs = np.shape(path)[0]
+    totlen = 0.
+    for kk in range(len(path)):
+        x0 = path[kk, 0]
+        x1 = path[(kk + 1) % nvtcs, 0]
+        y0 = path[kk, 1]
+        y1 = path[(kk + 1) % nvtcs, 1]
+        length = np.sqrt((y1 - y0) ** 2 + (x1 - x0) ** 2)
+        totlen += length
+
+    # Now make points along each segment
+    symmetryinds = [0]
+    for kk in range(len(path)):
+        x0 = path[kk, 0]
+        x1 = path[(kk + 1) % nvtcs, 0]
+        y0 = path[kk, 1]
+        y1 = path[(kk + 1) % nvtcs, 1]
+        length = np.sqrt((y1 - y0) ** 2 + (x1 - x0) ** 2)
+        if kk == 0:
+            kpts_x = np.linspace(x0, x1, int(npts * length / totlen) + 1)
+            kpts_y = np.linspace(y0, y1, int(npts * length / totlen) + 1)
+        else:
+            add_x = np.linspace(x0, x1, int(npts * length / totlen) + 1)
+            add_y = np.linspace(y0, y1, int(npts * length / totlen) + 1)
+            # add_x = np.arange(x0, x1, step)
+            # add_y = np.arange(y0, y1, step)
+            kpts_x = np.hstack((kpts_x, add_x))
+            kpts_y = np.hstack((kpts_y, add_y))
+
+        symmetryinds.append(len(kpts_x) - 1)
+
+    kpts = np.dstack((kpts_x, kpts_y))[0]
+    return kpts, symmetryinds
+
+
+def generate_bzpath_bzedge(vtcs, npts=100):
+    """Interpolate a path that walks along the edge of BZ, which is given by input arg vtcs.
+
+    Parameters
+    ----------
+    vtcs : n x 2 float array
+        the BZ corners, in order to be traversed
+    npts : int
+        the number of points to sample along the BZ boundary
+
+    Returns
+    -------
+    kpts, symmetryinds
+    """
+    # build path from vtcs of BZ
+    if len(vtcs) == 6:
+        vtcs = np.vstack((vtcs, np.array([vtcs[0]])))
+
+    path = vtcs
     # get total length, in order to estimate how many points to place along each segment of the path
     nvtcs = np.shape(path)[0]
     totlen = 0.
@@ -148,6 +221,12 @@ def reciprocal_lattice_vecs(a1, a2):
     b2 : array 1x3
         second reciprocal lattice vector
     """
+    if np.size(a1) != 3:
+        a1 = np.array([a1[0], a1[1], 0.])
+
+    if np.size(a2) != 3:
+        a2 = np.array([a2[0], a2[1], 0.])
+
     a3 = np.array([0, 0, 1])
 
     b1 = 2 * np.pi * np.cross(a2, a3) / (np.dot(a1, np.cross(a2, a3)))
@@ -186,9 +265,9 @@ def bz_vertices(a1, a2):
     Returns
     ----------
     vtx : array
-        x position of BZ zone corners
+        x position of BZ zone corners, Ordered by theta, with rightmost bz point first
     vty : array
-        y position of BZ zone corners
+        y position of BZ zone corners, Ordered by theta, with rightmost bz point first
     """
     if len(a1) == 2:
         a1 = np.hstack((a1, np.array([0.])))
@@ -331,7 +410,6 @@ def bz_based_on_ps(ps):
         vty.append(yv)
 
     # plt.scatter(vtx, vty, s = 60)
-    # plt.show()
     angs = np.array([np.arctan2(vty[i], vtx[i]) % (2. * np.pi) for i in range(len(vtx))])
     si = np.argsort(angs)
     vtx = np.array(vtx)[si]
@@ -341,6 +419,15 @@ def bz_based_on_ps(ps):
         rr = True
     else:
         rr = False
+
+    # Note that we ensure the rightmost point is first, then go counterclockwise from there
+    if np.argmax(vtx) != 0:
+        if np.argmax(vtx) == len(vtx) - 1:
+            vtx = np.roll(vtx, 1)
+            vty = np.roll(vty, 1)
+        else:
+            raise RuntimeError('Could not parse order of bz. Want output to be by increasing angle,'
+                               ' with rightmost first. Address this here.')
 
     # Check the result
     # import matplotlib.pyplot as plt

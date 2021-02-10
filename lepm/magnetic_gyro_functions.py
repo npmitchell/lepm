@@ -209,22 +209,6 @@ def calc_matrix_magnetic(mlat, eps=1e-10):
                 ni = int(mlat.NL[i, nn])  # the number of the gyroscope i is connected to
                 k = abs(mlat.KL[i, nn])  # true connection?
 
-                # This part is from Lisa
-                # if k != 0:
-                #     alphaij = np.arccos(diffx / rij_mag)
-                #     k = 1
-                # else:
-                #     alphaij = 0
-                #
-                # if diffy < 0:
-                #     alphaij = 2 * np.pi - alphaij
-                #
-                # if mlat.KL[i, nn] < 0:
-                #     alphaij = (np.pi + alphaij) % (2 * np.pi)
-                #
-                #     x1 = np.cos(alphaij) + x2
-                #     y1 = np.sin(alphaij) + y2
-
                 if abs(k) > eps:
                     # print 'mgyrofns: nn = ', nn
                     # print 'mgyrofns: PVx[i, nn] = ', PVx[i, nn]

@@ -13,6 +13,7 @@ import lepm.plotting.gyro_lattice_plotting_functions as glatpfns
 import lepm.plotting.science_plot_style as sps
 import lepm.plotting.colormaps as lecmap
 import lepm.plotting.movies as lemov
+import lepm.plotting.network_visualization as netvis
 import os
 import sys
 import argparse
@@ -20,6 +21,7 @@ import glob
 import copy
 import lepm.stringformat as sf
 import lepm.gyro_lattice_kspace_functions as glatkspacefns
+import lepm.gyro_data_handling as gdh
 try:
     import cPickle as pickle
 except ImportError:
@@ -28,7 +30,7 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 import matplotlib.cm
 import h5py
-
+import scipy.optimize
 
 '''
 Generate a GyroLattices using the GyroLattice class. This takes a lattice (points and connections) as input, as well as
@@ -72,12 +74,16 @@ class GyroLattice:
         LatticeTop, shape, NH, NV, 
         rootdir, meshfn, lattice_exten, phi, delta, theta, eta, x1, x2, x3, z, source, loadlattice_number,
         check, Ndefects, Bvec, dislocation_xy, target_z, make_slit, cutz_method, cutLfrac
-        V0_pin_gauss, V0_spring_gauss, dcdisorder
+        V0_pin_gauss, V0_spring_gauss, V0_pin_flat, V0_spring_flat, dcdisorder
 
     V0_pin_gauss: float
         stdev of distribution of delta-correlated pin disorder
     V0_pin_gauss: float
         stdev of distribution of delta-correlated spring disorder
+    V0_pin_flat: float
+        half width of flat distribution of delta-correlated pin disorder
+    V0_spring_flat: float
+        half width of flat distribution of delta-correlated spring disorder
     dcdisorder: bool
         Whether there is delta-function correlated disorder in the physics of the network (pin, spring)
 
@@ -167,43 +173,62 @@ class GyroLattice:
         self.OmK, lp_Omk, omk_meshfn_exten = glatfns.build_OmK(self.lattice, self.lp, OmK)
         self.lp['Omk'] = lp_Omk
         self.lp['meshfn_exten'] += omk_meshfn_exten
-        print self.lp['Omk']
-        print self.lp['meshfn_exten']
+        print 'glat: Omk', self.lp['Omk']
+        print 'glat: meshfn_exten = ', self.lp['meshfn_exten']
 
         #############################################################################
         # Form Omg
-        if Omg == 'auto' or Omg is None:
-            if 'Omg' in self.lp:
-                self.Omg = self.lp['Omg'] * np.ones_like(self.lattice.xy[:, 0])
-            else:
-                print 'giving Omg the default value of -1s...'
-                self.Omg = -1.0 * np.ones_like(self.lattice.xy[:, 0])
-            if self.lp['Omg'] != -1.0:
-                self.lp['meshfn_exten'] += '_Omg' + sf.float2pstr(self.lp['Omg'])
+        omgspec = False
+        self.pinmeshfn_exten = 'Omg'
+        if 'Omgspec' in self.lp:
+            if not self.lp['Omgspec'] in [None, 'none']:
+                omgspec = True
+
+        if omgspec:
+            self.pinmeshfn_exten = 'Omg' + self.lp['Omgspec']
+            self.lp['meshfn_exten'] += '_Omg' + self.lp['Omgspec']
         else:
-            self.Omg = Omg
-            if 'Omg' in self.lp:
-                if (self.Omg != self.lp['Omg'] * np.ones(np.shape(self.lattice.xy)[0])).any():
-                    self.lp['meshfn_exten'] += '_Omgspec'
-                    self.lp['Omg'] = -5000
-            else:
-                # Check if the values of all elements are identical
-                kinds = np.nonzero(self.Omg)
-                if len(kinds[0]) > 0:
-                    # There are some nonzero elements in Omg. Check if all the same
-                    value = self.Omg[kinds[0]]
-                    if (Omg[kinds] == value).all():
-                        self.lp['Omg'] = value
-                    else:
-                        self.lp['Omg'] = -5000
+            if Omg == 'auto' or Omg is None:
+                if 'Omg' in self.lp:
+                    self.Omg = self.lp['Omg'] * np.ones_like(self.lattice.xy[:, 0])
                 else:
-                    self.lp['Omg'] = 0.0
-        if 'ABDelta' in self.lp:
-            print 'glat: here: abdelta = ', self.lp['ABDelta']
-            if abs(self.lp['ABDelta']) > 0:
-                self.lp['meshfn_exten'] += '_ABd{0:0.3f}'.format(self.lp['ABDelta']).replace('.', 'p').replace('-', 'n')
-        else:
-            self.lp['ABDelta'] = 0.
+                    print 'giving Omg the default value of -1s...'
+                    self.Omg = -1.0 * np.ones_like(self.lattice.xy[:, 0])
+                if self.lp['Omg'] != -1.0:
+                    self.lp['meshfn_exten'] += '_Omg' + sf.float2pstr(self.lp['Omg'])
+
+                self.pinmeshfn_exten += '_mean' + sf.float2pstr(self.lp['Omg'])
+            else:
+                self.Omg = Omg
+                if 'Omg' in self.lp:
+                    if (self.Omg != self.lp['Omg'] * np.ones(np.shape(self.lattice.xy)[0])).any():
+                        self.lp['meshfn_exten'] += '_Omgspec'
+                        self.lp['Omg'] = -5000
+                        self.pinmeshfn_exten += 'spec'
+                    else:
+                        self.pinmeshfn_exten += '_mean' + sf.float2pstr(self.lp['Omg'])
+                else:
+                    # Check if the values of all elements are identical
+                    kinds = np.nonzero(self.Omg)
+                    if len(kinds[0]) > 0:
+                        # There are some nonzero elements in Omg. Check if all the same
+                        value = self.Omg[kinds[0]]
+                        if (Omg[kinds] == value).all():
+                            self.lp['Omg'] = value
+                            self.pinmeshfn_exten += '_mean' + sf.float2pstr(self.lp['Omg'])
+                        else:
+                            self.lp['Omg'] = -5000
+                            self.pinmeshfn_exten += 'spec'
+                    else:
+                        self.lp['Omg'] = 0.0
+                        self.pinmeshfn_exten += '_mean' + sf.float2pstr(self.lp['Omg'])
+            if 'ABDelta' in self.lp:
+                # print 'glat: here: abdelta = ', self.lp['ABDelta']
+                if abs(self.lp['ABDelta']) > 0:
+                    self.lp['meshfn_exten'] += '_ABd{0:0.3f}'.format(self.lp['ABDelta']).replace('.', 'p').replace('-', 'n')
+                    self.pinmeshfn_exten += '_ABd{0:0.3f}'.format(self.lp['ABDelta']).replace('.', 'p').replace('-', 'n')
+            else:
+                self.lp['ABDelta'] = 0.
 
         #############################################################################
         # Create meshfn exten for disorder in pin or spring frequencies
@@ -212,18 +237,49 @@ class GyroLattice:
                 self.lp['dcdisorder'] = True
                 self.lp['meshfn_exten'] += '_pinV' + sf.float2pstr(self.lp['V0_pin_gauss'])
                 self.lp['meshfn_exten'] += '_sprV' + sf.float2pstr(self.lp['V0_spring_gauss'])
+                if self.lp['V0_pin_gauss'] > 0:
+                    self.pinmeshfn_exten += '_pinV' + sf.float2pstr(self.lp['V0_pin_gauss'])
+                if self.lp['V0_spring_gauss'] > 0:
+                    self.pinmeshfn_exten += '_sprV' + sf.float2pstr(self.lp['V0_spring_gauss'])
                 if 'pinconf' not in self.lp:
                     self.lp['pinconf'] = 0
                 elif self.lp['pinconf'] > 0:
-                    self.lp['meshfn_exten'] += '_conf{0:04d}'.format(self.lp['pinconf'])
+                    self.lp['meshfn_exten'] += '_conf{0:04d}'.format(int(self.lp['pinconf']))
+
+                self.pinmeshfn_exten += '_conf{0:04d}'.format(int(self.lp['pinconf']))
+            else:
+                self.lp['dcdisorder'] = False
+        elif 'V0_pin_flat' in self.lp and 'V0_spring_flat' in self.lp:
+            if self.lp['V0_pin_flat'] > 0 or self.lp['V0_spring_flat'] > 0:
+                self.lp['dcdisorder'] = True
+                self.lp['meshfn_exten'] += '_pinVflat' + sf.float2pstr(self.lp['V0_pin_flat'])
+                self.lp['meshfn_exten'] += '_sprVflat' + sf.float2pstr(self.lp['V0_spring_flat'])
+                if self.lp['V0_pin_flat'] > 0:
+                    self.pinmeshfn_exten += '_pinVflat' + sf.float2pstr(self.lp['V0_pin_flat'])
+                if self.lp['V0_spring_flat'] > 0:
+                    self.pinmeshfn_exten += '_sprVflat' + sf.float2pstr(self.lp['V0_spring_flat'])
+                if 'pinconf' not in self.lp:
+                    self.lp['pinconf'] = 0
+                elif self.lp['pinconf'] > 0:
+                    self.lp['meshfn_exten'] += '_conf{0:04d}'.format(int(self.lp['pinconf']))
+
+                self.pinmeshfn_exten += '_conf{0:04d}'.format(int(self.lp['pinconf']))
             else:
                 self.lp['dcdisorder'] = False
         else:
             self.lp['V0_pin_gauss'] = 0.
             self.lp['V0_spring_gauss'] = 0.
+            self.lp['V0_pin_flat'] = 0.
+            self.lp['V0_spring_flat'] = 0.
             self.lp['pinconf'] = 0
             self.lp['dcdisorder'] = False
 
+        if not 'V0_pin_flat' in self.lp:
+            self.lp['V0_pin_flat'] = 0.
+
+        if not 'V0_spring_flat' in self.lp:
+            self.lp['V0_spring_flat'] = 0.
+        
         # Note: theta_twist and phi_twist are in units of pi!
         # Append thetatwist and/or phitwist to meshfn_exten
         if 'theta_twist' in lp:
@@ -236,7 +292,9 @@ class GyroLattice:
         #############################################################################
         # Load or save disorder
         if abs(self.lp['ABDelta']) > eps or abs(self.lp['V0_pin_gauss'] > eps) \
-                or abs(self.lp['V0_spring_gauss'] > eps):
+                or abs(self.lp['V0_spring_gauss'] > eps) \
+                or abs(self.lp['V0_pin_flat'] > eps) or abs(self.lp['V0_pin_flat'] > eps) \
+                or omgspec:
             # In order to load the random (V0) or alternating (AB) pinning sites, look for a txt file with the pinnings
             # that also has specifications in its meshfn exten, but IGNORE other parts of meshfnexten, if they exist.
             # Form abbreviated meshfn exten
@@ -247,19 +305,11 @@ class GyroLattice:
             # Attempt to load from file
             try:
                 self.load_pinning(meshfn=self.lp['meshfn'])
-                # self.Omg = np.loadtxt(dio.prepdir(self.lp['meshfn']) + pinmfe + '.txt')
                 print 'Loaded ABDelta and/or dcdisordered pinning frequencies.'
             except IOError:
-                print 'Could not load ABDelta and/or dcdisordered pinning frequencies, defining them here...'
-                # Make Omg from scratch
-                if np.abs(self.lp['ABDelta']) > eps:
-                    asites, bsites = glatfns.ascribe_absites(self.lattice)
-                    self.Omg[asites] += self.lp['ABDelta']
-                    self.Omg[bsites] -= self.lp['ABDelta']
-                if self.lp['V0_pin_gauss'] > 0 or self.lp['V0_spring_gauss'] > 0:
-                    self.add_dcdisorder()
-
-                # Save non-standard Omg
+                print 'Could not load ABDelta and/or dcdisordered and/or specified pinning frequencies, ' \
+                      'defining them here...'
+                # Determine if we save to hdf5 or to txt file on disk
                 if 'save_pinning_to_hdf5' in self.lp:
                     if self.lp['save_pinning_to_hdf5']:
                         force_hdf5pin = True
@@ -267,10 +317,57 @@ class GyroLattice:
                         force_hdf5pin = False
                 else:
                     force_hdf5pin = False
-                self.save_Omg(infodir=self.lp['meshfn'], histogram=False, force_hdf5=force_hdf5pin)
-                print 'glat: saved pinning!'
-                # sys.exit()
-                # self.plot_Omg()
+
+                if 'unique_Omg' in self.lp:
+                    unique_Omg = self.lp['unique_Omg']
+                else:
+                    unique_Omg = False
+
+                if 'Omgspec' not in self.lp:
+                    self.lp['Omgspec'] = None
+
+                if not self.lp['Omgspec'] in [None, 'none', '']:
+                    self.Omg = glatfns.load_omgspec(self)
+                    self.save_Omg(infodir=self.lp['meshfn'], histogram=False, force_hdf5=force_hdf5pin)
+                    print 'glat: saved pinning from Omgspec!'
+                else:
+                    # Make Omg from scratch or load it in pieces
+                    if np.abs(self.lp['ABDelta']) > eps:
+                        # Load or save the alternating pinning freqs if they don't exist. Only save if we save generic ABd.
+                        try:
+                            addomg = glatfns.load_abdelta(self)
+                        except:
+                            asites, bsites = glatfns.ascribe_absites(self.lattice)
+                            addomg = np.zeros_like(self.Omg)
+                            addomg[asites] += self.lp['ABDelta']
+                            addomg[bsites] -= self.lp['ABDelta']
+
+                            # Only save if we save generic ABd, rather than unique
+                            if unique_Omg:
+                                print 'saving abdelta pinning'
+                                glatfns.save_abdelta(self, addomg, force_hdf5=force_hdf5pin)
+                                print 'glat: saved abdelta pinning!'
+
+                        # Add DeltaAB to self.Omg here
+                        self.Omg += addomg
+                    if self.lp['V0_pin_gauss'] > 0 or self.lp['V0_spring_gauss'] > 0:
+                        addomg = self.add_dcdisorder()
+                        # Only save if we save generic ABd, rather than unique
+                        if not unique_Omg:
+                            glatfns.save_vpin_gauss(self, addomg, force_hdf5=force_hdf5pin)
+                            print 'glat: saved vpin pinning!'
+
+                    # Save non-standard Omg with 1:1 match between unique meshfn_exten and unique Omg
+                    if unique_Omg:
+                        self.save_Omg(infodir=self.lp['meshfn'], histogram=False, force_hdf5=force_hdf5pin)
+                        print 'glat: saved pinning!'
+
+
+        if 'basis' in lp:
+            if lp['basis'] != 'XY':
+                lp['meshfn_exten'] += '_' + lp['basis']
+        else:
+            lp['basis'] = 'XY'
 
         #############################################################################
         # Non-essential attributes, updated later if needed
@@ -278,6 +375,8 @@ class GyroLattice:
         self.eigvect = eigvect
         self.eigval = eigval
         self.magevecs = magevecs
+        # This is topbottom identification of each normal mode --> ie whether closer to boundary[0] or boundary[1]
+        self.tbcom = None
         # there is no real reason to save kspace matrix --> it is fast to create compared to diagonalization
         # self.matrixk = matrixk
         self.ipr = ipr
@@ -323,8 +422,8 @@ class GyroLattice:
             self.lattice.load()
 
         if self.Omg is None:
-            # SHOULD ALREADY BY LOADED FROM FILE OR CREATED FROM SCRATCH
-            if self.lp['V0_pin_gauss'] > 0 or self.lp['ABDelta'] > 0:
+            # SHOULD ALREADY BE LOADED FROM FILE OR CREATED FROM SCRATCH
+            if self.lp['V0_pin_gauss'] > 0 or self.lp['ABDelta'] > 0 or self.lp['V0_pin_flat'] > 0:
                 self.load_pinning(meshfn=meshfn)
             else:
                 self.Omg = self.lp['Omg'] * np.ones_like(self.lattice.xy[:, 0])
@@ -332,8 +431,20 @@ class GyroLattice:
         if self.lp['V0_spring_gauss'] > 0:
             print 'todo: This is not finished'
             sys.exit()
+        elif self.lp['V0_spring_flat'] > 0:
+            print 'todo: This is not finished'
+            sys.exit()
         else:
-            self.OmK = self.lp['Omk'] * np.abs(self.lattice.KL)
+            # self.OmK = self.lp['Omk'] * np.abs(self.lattice.KL)
+            if self.OmK is None:
+                self.OmK, lp_Omk, omk_meshfn_exten = glatfns.build_OmK(self.lattice, self.lp, self.OmK)
+
+        # Check it
+        # print 'self.lp[OmKspec] = ', self.lp['OmKspec']
+        # print 'self.lp[Omk] = ', self.lp['Omk']
+        # print 'self.OmK = ', self.OmK
+        # print 'self.lp[meshfn_exten] = ', self.lp['meshfn_exten']
+        # sys.exit()
 
         if loadDOS:
             print 'Loading eigval/vect...'
@@ -349,47 +460,124 @@ class GyroLattice:
                 self.save_ipr(save_images=True)
 
     def load_pinning(self, meshfn=None):
-        """Load the Omg vector for this instance of GyroLattice"""
+        """Load the Omg vector for this instance of GyroLattice
+        Specify if pinning with disorder is unique through self.lp['unique_Omg']
+        """
         # First try to load from hdf5 file, if it exists
         # If hdf5 file does not exist or contain the pinning for this meshfn_exten, attempt to load from txt file
         if meshfn is None:
             meshfn = self.lp['meshfn']
         pinning_name = self.get_pinmeshfn_exten()
         pinfn = dio.prepdir(meshfn) + 'omg_configs.hdf5'
-        if glob.glob(pinfn):
-            with h5py.File(dio.prepdir(meshfn) + 'omg_configs.hdf5', "r") as fi:
-                inhdf5 = pinning_name in fi.keys()
-                if inhdf5:
-                    self.Omg = fi[pinning_name][:]
-                    load_from_txt = False
-                else:
-                    load_from_txt = True
-        else:
-            load_from_txt = True
 
-        if load_from_txt:
-            print 'could not find pinning config from hdf5, opening pinning configs from txt...'
-            self.Omg = np.loadtxt(dio.prepdir(meshfn) + pinning_name + '.txt')
+        # Check if we are to create a truly unique pin configuration, with different realization for ANY difference in
+        # any parameters affecting meshfn_exten
+        if 'unique_Omg' in self.lp:
+            unique_Omg = self.lp['unique_Omg']
+        else:
+            unique_Omg = False
+        # Check if there is an Omg specification in lp
+        spec = False
+        if 'Omgspec' in self.lp:
+            if not self.lp['Omgspec'] in [None, 'none', '']:
+                spec = True
+
+        if unique_Omg:
+            # create a truly unique pin configuration, with different realization for ANY difference in
+            # any parameters affecting meshfn_exten
+            if glob.glob(pinfn):
+                with h5py.File(dio.prepdir(meshfn) + 'omg_configs.hdf5', "r") as fi:
+                    inhdf5 = pinning_name in fi.keys()
+                    if inhdf5:
+                        self.Omg = fi[pinning_name][:]
+                        load_from_txt = False
+                    else:
+                        load_from_txt = True
+            else:
+                load_from_txt = True
+
+            if load_from_txt:
+                print 'could not find pinning config from hdf5, opening pinning configs from txt...'
+                self.Omg = np.loadtxt(dio.prepdir(meshfn) + pinning_name + '.txt')
+        else:
+            if spec:
+                self.Omg = glatfns.load_pin_spec(self)
+            else:
+                # Load the pin configuration one piece at a time -- add disorder based on pinconf, add ABd multiplied by
+                # its magnitude, etc
+                self.Omg = self.lp['Omg'] * np.ones_like(self.lattice.xy[:, 0])
+                add, addomg = glatfns.load_vpin_gauss(self)
+                print 'glat: loaded vpin from disk'
+                add += glatfns.load_abdelta(self)
+                print 'glat: loaded abdelta from disk'
+                self.Omg += add
+
+        # print 'glat: exiting here in load_pinning()'
+        # sys.exit()
+        return self.Omg
 
     def build(self):
         import lepm.make_lattice
         self.lattice = lepm.make_lattice.build_lattice(self.lattice)
 
     def get_pinmeshfn_exten(self):
-        """Return the name of the file or dataset that stores the pinning frequencies of this network"""
-        pinmfe = 'Omg_mean' + sf.float2pstr(self.lp['Omg']) + self.lp['meshfn_exten']
+        """Return the name of the file or dataset that stores the pinning frequencies of this network.
+        If you want a unique pin configuration for ANY change in ANY parameter affecting meshfn_exten, set
+        lp['unique_Omg'] = True. Otherwise, we load a single pin configuration for disorder (given by pinconf)
+        """
+        unique = False
+        spec = False
+        if 'unique_Omg' in self.lp:
+            if self.lp['unique_Omg']:
+                unique = True
+        if 'Omgspec' in self.lp:
+            if self.lp['Omgspec']:
+                spec = True
+
+        if spec:
+            pinmfe = 'Omg_' + self.lp['Omgspec']
+        elif unique:
+            pinmfe = 'Omg_mean' + sf.float2pstr(self.lp['Omg']) + self.lp['meshfn_exten']
+        else:
+            pinmfe = self.pinmeshfn_exten
+
         return pinmfe
 
-    def add_dcdisorder(self):
+    def add_dcdisorder(self, force_hdf5=True):
         """Add gaussian noise to pinning or spring energies (delta-correlated disorder)"""
         # Add gaussian noise to pinning energies
         if self.lp['V0_pin_gauss'] > 0:
-            self.Omg += self.lp['V0_pin_gauss']*np.random.randn(len(self.lattice.xy))
+            # attempt to load dcdisorder from disk
+            try:
+                add_omg, addomg = glatfns.load_vpin_gauss(self)
+                self.Omg += add_omg
+            except:
+                addomg = np.random.randn(len(self.lattice.xy))
+                self.Omg += self.lp['V0_pin_gauss'] * addomg
+        elif self.lp['V0_pin_flat'] > 0:
+            # attempt to load dcdisorder from disk
+            try:
+                add_omg, addomg = glatfns.load_vpin_flat(self)
+                raise RuntimeError('This means an erronous Omg was saved --where was it saved?')
+                self.Omg += add_omg
+            except:
+                # Note that we multiply by two so that V0_pin_flat is the HALF width of the distribution
+                addomg = 2 * (np.random.rand(len(self.lattice.xy)) - 0.5)
+                self.Omg += self.lp['V0_pin_flat'] * addomg
+
         if self.lp['V0_spring_gauss'] > 0:
             print 'This is not done correctly here'
             self.OmK += self.lp['V0_spring_gauss'] * np.random.randn(np.shape(self.lattice.KL)[0],
                                                                      np.shape(self.lattice.KL)[1])
             sys.exit()
+
+        if self.lp['V0_spring_flat'] > 0:
+            print 'This is not done correctly here'
+            self.OmK += self.lp['V0_spring_flat'] * np.random.rand(np.shape(self.lattice.KL)[0],
+                                                                     np.shape(self.lattice.KL)[1])
+            sys.exit()
+
+        return addomg
 
     def load_eigval_eigvect(self, attribute=True):
         """Load eigval and eigvect from disk: first try hdf5, then look for pickle"""
@@ -423,12 +611,12 @@ class GyroLattice:
 
         return eigval, eigvect
 
-    def load_eigval(self, attribute=True):
+    def load_eigval(self, attribute=True, basis=None):
         """Load eigval from disk: first try hdf5, then look for pickle"""
         # Make eigval name
         eigval_name = "eigval" + self.lp['meshfn_exten']
         # First look in eigvals_gyro.hdf5
-        h5_evl = dio.prepdir(self.lp['meshfn']) + "eigvals_gyro.hdf5"
+        h5_evl = dio.prepdir(self.lp['meshfn']) + "eigvals_gyro" + ".hdf5"
         evl_saved_to_hdf5 = h5io.dset_in_hdf5(eigval_name, h5_evl)
 
         # If not there, look for pkl files
@@ -449,7 +637,7 @@ class GyroLattice:
 
         return eigval
 
-    def load_eigvect(self, attribute=True):
+    def load_eigvect(self, attribute=True, basis=None):
         """Load eigvect from disk: first try hdf5, then look for pickle"""
         # Make eigval name
         eigvect_name = "eigvect" + self.lp['meshfn_exten']
@@ -490,6 +678,7 @@ class GyroLattice:
         if mevt_saved_to_hdf5:
             magevecs = h5io.extract_dset_hdf5(magevecs_name, h5_mevt)
         elif glob.glob(fn_mevt):
+            print 'Opening mevt from pkl...'
             with open(fn_mevt, "rb") as f:
                 magevecs = pickle.load(f)
         else:
@@ -577,14 +766,20 @@ class GyroLattice:
             return None
 
     def get_matrix(self, attribute=False, basis=None):
-
+        """Return the dynamical matrix for the network"""
         if self.matrix is None:
+            if basis is None and 'basis' in self.lp:
+                basis = self.lp['basis']
+            print 'glat(): calculating matrix'
             return self.calc_matrix(attribute=attribute, basis=basis)
         else:
             return self.matrix
 
     def get_eigval_eigvect(self, attribute=False, basis=None):
         """Return eigval and eigvect, obtaining them by (1) calling from self, (2) loading them, or (3) calculating"""
+        if basis is None:
+            basis = self.lp['basis']
+
         # First attempt to return, then attempt to load, then calculate if unavailable
         if self.eigval is not None and self.eigvect is not None:
             eigval = self.eigval
@@ -592,20 +787,23 @@ class GyroLattice:
         else:
             # Try to load eigval and eigvect
             print 'Attempting to load eigval/vect...'
-            eigval = self.load_eigval(attribute=attribute)
-            eigvect = self.load_eigvect(attribute=attribute)
+            eigval = self.load_eigval(attribute=attribute, basis=basis)
+            eigvect = self.load_eigvect(attribute=attribute, basis=basis)
 
             if eigval is None or eigvect is None:
                 print 'glat.get_eigval_eigvect: Could not load eigval/vect, calculating...'
                 # calculate eigval and eigvect
                 # Define matrix first to avoid attributing matrix to self
                 if self.matrix is None:
+                    if basis is None and 'basis' in self.lp:
+                        basis = self.lp['basis']
                     matrix = self.calc_matrix(attribute=False, basis=basis)
                 else:
                     matrix = self.matrix
                 eigval, eigvect = self.eig_vals_vects(matrix=matrix, attribute=attribute)
             else:
-                print 'loaded!'
+                print 'loaded eigval and eigvect!'
+
         return eigval, eigvect
 
     def get_eigval(self, attribute=False):
@@ -639,6 +837,9 @@ class GyroLattice:
                 # calculate eigval and eigvect
                 # Define matrix first to avoid attributing matrix to self
                 if self.matrix is None:
+                    if basis is None and 'basis' in self.lp:
+                        basis = self.lp['basis']
+
                     matrix = self.calc_matrix(attribute=False, basis=basis)
                 else:
                     matrix = self.matrix
@@ -648,11 +849,14 @@ class GyroLattice:
 
         return eigvect
 
-    def get_magevecs(self, eigvect=None):
+    def get_magevecs(self, eigvect=None, save=True):
         print 'glat: get_magevecs()'
         magevecs = self.load_magevecs()
         if magevecs is None:
             magevecs = self.calc_magevecs(eigvect=eigvect)
+            if save:
+                print 'Warning: saving magnitude of eigenvectors...'
+                self.save_magevecs(magevecs=magevecs)
         return magevecs
 
     def get_ipr(self, attribute=False, attrib_eigvalvect=False):
@@ -806,6 +1010,29 @@ class GyroLattice:
         topbot_full[len(topbot):2 * len(topbot)] = topbot
         return topbot_full
 
+    def get_topbottom_com(self, attribute=False, bndy_thres=0.33333333):
+        """Obtain whether each state is weighted towards a particular boundary or the other, or neither, using a cutoff
+
+        Returns
+        -------
+        tb : 2*NP x 4 float array
+
+        """
+        tbcom = self.calc_topbottom_com(attribute=attribute, bndy_thres=bndy_thres)
+        return tbcom
+
+    def calc_topbottom_com(self, attribute=False, bndy_thres=0.333333333333):
+        """Calculate whether each state is weighted towards a particular boundary or the other, or neither,
+        using a cutoff
+
+        Parameters
+        ----------
+        """
+        tbcom = glocfns.locz_which_boundary_com(self, bndy_thres)
+        if attribute:
+            self.tbcom = tbcom
+        return tbcom
+
     def get_topbottom_edgelocz_dispersion(self, kx=None, ky=None, nkxvals=50, nkyvals=20,
                                           save=True, save_plot=True, title='Dispersion relation',
                                           save_dos_compare=False, outdir=None, name=None, ax=None,
@@ -816,6 +1043,16 @@ class GyroLattice:
             save_dos_compare=save_dos_compare, outdir=outdir, name=name, ax=ax, check=check, checkdir=checkdir)
         return omegas, kx, ky, elocz
 
+    def get_bottommiddletop_edgelocz_dispersion(self, kx=None, ky=None, nkxvals=50, nkyvals=20,
+                                                save=True, save_plot=True, title='Dispersion relation',
+                                                save_dos_compare=False, outdir=None, name=None, ax=None,
+                                                check=False, checkdir=None):
+        """"""
+        omegas, kx, ky, elocz = \
+            glocfns.bottommiddletop_edgelocz_dispersion(self,kx=kx, ky=ky, nkxvals=nkxvals, nkyvals=nkyvals, save=save,
+                                                        save_plot=save_plot, title=title, outdir=outdir,
+                                                        name=name, ax=ax, check=check, checkdir=checkdir)
+        return omegas, kx, ky, elocz
 
     def ensure_eigval_eigvect(self, eigval=None, eigvect=None, attribute=True, load=True, force_hdf5=False):
         """Make sure that eigval and eigvect are both saved to disk. If eigval and eigvect are supplied and a file
@@ -1118,14 +1355,15 @@ class GyroLattice:
             eigval, eigvect = self.get_eigval_eigvect(attribute=attribute)
 
         # Naming
-        basis_str = glatfns.get_basis_str(self)
-        eigval_name = 'eigval' + self.lp['meshfn_exten'] + basis_str
-        eigvect_name = 'eigvect' + self.lp['meshfn_exten'] + basis_str
+        # basis_str = glatfns.get_basis_str(self)
+        # Note: basis is already part of meshfn_exten now
+        eigval_name = 'eigval' + self.lp['meshfn_exten']  # + basis_str
+        eigvect_name = 'eigvect' + self.lp['meshfn_exten'] # + basis_str
         if force_hdf5:
-            eigvalfn = dio.prepdir(self.lp['meshfn']) + 'eigvals_gyro' + basis_str + '.hdf5'
+            eigvalfn = dio.prepdir(self.lp['meshfn']) + 'eigvals_gyro.hdf5'
             h5io.save_dset_hdf5(eigval, eigval_name, eigvalfn)
 
-            eigvectfn = dio.prepdir(self.lp['meshfn']) + 'eigvects_gyro' + basis_str + '.hdf5'
+            eigvectfn = dio.prepdir(self.lp['meshfn']) + 'eigvects_gyro.hdf5'
             h5io.save_dset_hdf5(eigvect, eigvect_name, eigvectfn)
         else:
             eigvalfn = infodir + eigval_name + '.pkl'
@@ -1140,7 +1378,7 @@ class GyroLattice:
 
         if save_png:
             fig, DOS_ax = leplt.initialize_DOS_plot(self.eigval, 'gyro')
-            plt.savefig(infodir + 'eigval_gyro_hist' + self.lp['meshfn_exten'] + basis_str + '.png')
+            plt.savefig(infodir + 'eigval_gyro_hist' + self.lp['meshfn_exten'] + '.png')
             plt.clf()
         print 'Saved gyro DOS to ' + eigvalfn + '\n and ' + eigvectfn
 
@@ -1166,10 +1404,9 @@ class GyroLattice:
             eigval = self.get_eigval(attribute=attribute)
 
         # Naming
-        basis_str = glatfns.get_basis_str(self)
-        eigval_name = 'eigval' + self.lp['meshfn_exten'] + basis_str
+        eigval_name = 'eigval' + self.lp['meshfn_exten']
         if force_hdf5:
-            eigvalfn = dio.prepdir(self.lp['meshfn']) + 'eigvals_gyro' + basis_str + '.hdf5'
+            eigvalfn = dio.prepdir(self.lp['meshfn']) + 'eigvals_gyro.hdf5'
             h5io.save_dset_hdf5(eigval, eigval_name, eigvalfn)
         else:
             eigvalfn = infodir + eigval_name + '.pkl'
@@ -1229,6 +1466,18 @@ class GyroLattice:
         force_hdf5 : bool
             save the pinning configuration to an hdf5 file rather than a text file
         """
+        unique = False
+        if 'unique_Omg' in self.lp:
+            if self.lp['unique_Omg']:
+                unique = True
+
+        if not unique:
+            if 'Omgspec' in self.lp:
+                if not self.lp['Omgspec']:
+                    raise RuntimeError('Use save_Omg() only if using a unique file for every meshfn_exten')
+            else:
+                raise RuntimeError('Use save_Omg() only if using a unique file for every meshfn_exten')
+
         if infodir == 'auto':
             infodir = dio.prepdir(self.lattice.lp['meshfn'])
         if self.Omg is not None:
@@ -1252,8 +1501,8 @@ class GyroLattice:
                         raise RuntimeError('Pinning config already exists in hdf5, exiting...')
             else:
                 # Otherwise perform standard save of a text file for the pinning configuration
-                print 'saving pinning in txt...'
                 fn = dio.prepdir(self.lp['meshfn']) + pinning_name + '.txt'
+                print 'saving pinning in txt: fn = ', fn
                 np.savetxt(fn, self.Omg, header="Pinning frequencies Omg")
                 if histogram:
                     plt.clf()
@@ -1489,7 +1738,8 @@ class GyroLattice:
         print 'Saved gyro localization to ' + fn
         return elocz
 
-    def save_DOSmovie(self, infodir='auto', attribute=True, save_DOS_if_missing=True, basis=None):
+    def save_DOSmovie(self, infodir='auto', attribute=True, save_DOS_if_missing=True, basis=None,
+                      amplify=1.0, vmax_dos=None):
         """"""
         if infodir == 'auto':
             infodir = self.lattice.lp['meshfn'] + '/'
@@ -1522,6 +1772,9 @@ class GyroLattice:
                     output.close()
 
                     print 'Saved gyro DOS to ' + infodir + 'eigvect(val)' + exten + '.pkl\n'
+        else:
+            eigval = self.eigval
+            eigvect = self.eigvect
 
         if not glob.glob(infodir + 'eigval_gyro_hist' + exten + '.png'):
             fig, DOS_ax = leplt.initialize_DOS_plot(eigval, 'gyro')
@@ -1534,8 +1787,8 @@ class GyroLattice:
             colorstr = 'pr'
 
         lemov.save_normal_modes_Nashgyro(self, datadir=infodir, dispersion=[], sim_type='gyro',
-                                         rm_images=True, gapims_only=False, save_into_subdir=False, overwrite=True,
-                                         color=colorstr)
+                                         rm_images=False, gapims_only=False, save_into_subdir=False, overwrite=True,
+                                         color=colorstr, amplify=amplify, vmax_dos=vmax_dos)
 
     def infinite_dispersion(self, kx=None, ky=None, nkxvals=50, nkyvals=20,
                             save=True, save_plot=True, title='Dispersion relation',
@@ -1574,6 +1827,7 @@ class GyroLattice:
         omegas, kx, ky
         """
         # Note: the function called below has not been finished
+        # todo: consider cropping only to the BZ
         omegas, kx, ky = glatkspacefns.infinite_dispersion(self, kx=kx, ky=ky, nkxvals=nkxvals, nkyvals=nkyvals,
                                                            save=save, save_plot=save_plot, title=title, outdir=outdir,
                                                            name=name, ax=ax, lwscale=lwscale)
@@ -1602,6 +1856,86 @@ class GyroLattice:
 
         return omegas, kx, ky
 
+    def sample_dos_in_BZ(self, density=100, save=True, save_plot=True, overwrite=False):
+        return glatkspacefns.sample_dos_in_BZ(self, density=density, save=save, save_plot=save_plot,
+                                              overwrite=overwrite)
+
+    def get_bands(self, kxy=None, density=100, verbose=False):
+        """Obtain normal mode frequencies for the provided kxky or for kxky randomly picked with provided density
+        in the BZ.
+
+        Parameters
+        ----------
+        density:
+        kxky:
+
+        """
+        if kxky is not None:
+            raise RuntimeError('Implement obtaining omegas from the supplied kxky')
+        else:
+            # prepare kx, ky in BZ
+            omegas, kx, ky = glatkspacefns.get_bands(kxy=kxy, density=density)
+        return omegas, kx, ky
+
+    def get_matrix_at_kpt(self, kxy, verbose=False, check=False, eps=1e-10):
+        """Obtains eigenvals/vectors for bands at specified wavevectors
+        """
+        matk = glatkspacefns.get_matrix_at_kpt(self, kxy, verbose=verbose, check=check, eps=eps)
+        return matk
+
+    def get_band_eigs_at_kpt(self, kxy, verbose=False, check=False):
+        """Obtains eigenvals/vectors for bands at specified wavevectors
+        """
+        eigs, eigvs = glatkspacefns.get_band_eigs_at_kpt(self, kxy, verbose=verbose, check=check)
+        return eigs, eigvs
+
+    # def get_band_limit_kxy_eigs(self, omegas=None, kxy=None, density=100, iterfrac=0.3, verbose=False, check=False):
+    #     """Obtains bounding values for bands (not bounding polygons, but bounding frequencies).
+    #     Compute the min and max of each band, which is defined over the supplied kxy or a random sampling of the BZ with
+    #     provided density if kxy is not supplied."""
+    #     msg = "Instead use glat.get_kpt_band_extremum(minmax='max', band=0, guess=[2., 0.], bounds=((0, 5), (0, 5)))"
+    #     raise RuntimeError(msg)
+    #     # THIS DOESN'T WORK RELIABLY FOR SOME REASON!! The minimization is all screwy...
+    #     kxy, eigs, eigvs = glatkspacefns.calc_band_limit_locations_kxy(self, omegas=omegas, kxy=kxy, density=density,
+    #                                                                    iterfrac=iterfrac, verbose=verbose, check=check)
+    #     return kxy, eigs, eigvs
+
+    def get_band_limits(self, omegas=None, kxy=None, density=100, verbose=False):
+        """Obtains bounding values for bands (not bounding polygons, but bounding frequencies).
+        Compute the min and max of each band, which is defined over the supplied kxy or a random sampling of the BZ with
+        provided density if kxy is not supplied."""
+        limits = glatkspacefns.calc_band_limits(self, omegas=omegas, kxy=kxy, density=density, verbose=verbose)
+        return limits
+
+    def get_band_bounds(self, omegas=None, kxy=None, density=100, verbose=False, ngridpts=100):
+        """Obtains bounding polygons in k, omega space for bands.
+        """
+        bounds = glatkspacefns.calc_band_bounds(self, omegas=omegas, kxy=kxy, density=density, verbose=verbose,
+                                                ngridpts=ngridpts)
+        return bounds
+
+    def get_band_gaps(self, omegas=None, kxy=None, density=100, verbose=False):
+        """"""
+        gaps = glatkspacefns.calc_band_gaps(self, omegas=omegas, kxy=kxy, density=density, verbose=verbose)
+        return gaps
+
+    def get_kpt_at_band_extremum(self, minmax='min', band=0, guess=[2., 0.], bounds=((0, 5), (0, 5)), tol=1e-12):
+        """Find the wavevector at which a band is a maximum or minimum, like a Dirac point or gamma point"""
+        def band_eigvalue_at_kpt(x0, glat, minmax, band):
+            eigs, eigvs = glat.get_band_eigs_at_kpt(x0)
+            eig = eigs[0][band]
+            print 'eig = ', eig
+            if minmax == 'min':
+                return eig
+            else:
+                return -eig
+
+        popt = scipy.optimize.minimize(band_eigvalue_at_kpt, guess, args=(self, minmax, band),
+                                             method='L-BFGS-B', bounds=bounds, tol=tol)
+        # scipy.optimize.
+        # method='L-BFGS-B')
+        return popt
+
     def calc_matrix(self, attribute=True, check=False, basis=None):
         """
 
@@ -1618,6 +1952,9 @@ class GyroLattice:
         -------
 
         """
+        if basis is None and 'basis' in self.lp:
+            basis = self.lp['basis']
+
         matrix = glatfns.dynamical_matrix_gyros(self, basis=basis)
         if check:
             le.plot_real_matrix(matrix, show=True)
@@ -1625,6 +1962,12 @@ class GyroLattice:
         if attribute:
             self.matrix = matrix
         return matrix
+
+    def calc_matrix_at_kpt(self, kxy, verbose=False, check=False):
+        """Obtains eigenvals/vectors for bands at specified wavevectors
+        """
+        matk = glatkspacefns.get_matrix_at_kpt(self, kxy, verbose=verbose, check=check)
+        return matk
 
     def calc_eigvals(self, matrix=None, sort='imag', attribute=True):
         """
@@ -1667,7 +2010,7 @@ class GyroLattice:
 
         return magevec
 
-    def eig_vals_vects(self, matrix=None, attribute=True, check=False):
+    def eig_vals_vects(self, matrix=None, attribute=True, check=False, verbose=True):
         """finds the eigenvalues and eigenvectors of self.matrix"""
         if matrix is None:
             print 'glat.eig_vals_vects: getting matrix...'
@@ -1675,8 +2018,16 @@ class GyroLattice:
             if check:
                 le.plot_complex_matrix(matrix, show=True)
 
+        # print 'matrix = ', matrix
         print 'glat.eig_vals_vects: computing eigval, eigvect...'
         eigval, eigvect = le.eig_vals_vects(matrix)
+
+        if 'ortho' in self.lp:
+            if self.lp['ortho']:
+                if verbose:
+                    print 'orthonormalizing eigvects...'
+                eigvect = gdh.orthonormal_eigvect(eigvect, basis=self.lp['basis'], negative=False)
+
         if attribute:
             self.eigval = eigval
             self.eigvect = eigvect
@@ -1948,34 +2299,45 @@ class GyroLattice:
 
         return edge_localization
 
-    def plot_Omg(self):
+    def plot_Omg(self, fig=None, ax=None, cax=None, ptsz=None, cmap='coolwarm', edgecolors='none', lw=1, save=False):
         """Plot the network colored by pinning frequency"""
-        fig, ax, cbar_ax = leplt.initialize_1panel_cbar_cent(wsfrac=0.5,)
+        if fig is None and ax is None:
+            fig, ax, cax = leplt.initialize_1panel_cbar_cent(wsfrac=0.5,)
         self.lattice.plot_BW_lat(fig=fig, ax=ax, save=False, close=False, axis_off=False, title='')
-        sc = ax.scatter(self.lattice.xy[:, 0], self.lattice.xy[:, 1], c=self.Omg, cmap='coolwarm', edgecolors='none')
-        ticks = [np.min(self.Omg), self.lp['Omg'], np.max(self.Omg)]
-        plt.colorbar(mappable=sc, cax=cbar_ax, label=r'$\Omega_g$', orientation='horizontal', ticks=ticks)
-        cbar_ax.xaxis.labelpad = -25
-        plt.savefig(dio.prepdir(self.lp['meshfn']) + 'Omg_mean' + sf.float2pstr(self.lp['Omg']) +
-                    self.lp['meshfn_exten'] + '.png')
-        plt.clf()
-        # plt.show()
+        sc = ax.scatter(self.lattice.xy[:, 0], self.lattice.xy[:, 1], c=self.Omg, s=ptsz,
+                        cmap=cmap, edgecolors=edgecolors, lw=lw)
+        if cax is not None:
+            ticks = [np.min(self.Omg), self.lp['Omg'], np.max(self.Omg)]
+            plt.colorbar(mappable=sc, cax=cax, label=r'$\Omega_g$', orientation='horizontal', ticks=ticks)
+            cax.xaxis.labelpad = -25
+        if save:
+            plt.savefig(dio.prepdir(self.lp['meshfn']) + 'Omg_mean' + sf.float2pstr(self.lp['Omg']) +
+                        self.lp['meshfn_exten'] + '.png')
+            plt.clf()
+            # plt.show()
+        return fig, ax, cax
 
     def plot_OmK(self, axis_off=True):
-        """Plot the bonds colored by characteristic spring frequency"""
+        """Plot the bonds colored by characteristic spring frequency
+
+        Example usage:
+        python gyro_lattice_class.py -plot_OmK -LT hexjunctiontriad -N 1 -OmKspec unionn0p000in0p200
+        """
         fig, ax, cbar_ax = leplt.initialize_1panel_cbar_cent(wsfrac=0.5,)
         # sc = self.lattice.plot_BW_lat(fig=fig, ax=ax, save=False, close=False, axis_off=False, title='')
         OmKv = le.KL2kL(self.lattice.NL, self.OmK, self.lattice.BL)
-        [ax, axcb] = le.movie_plot_2D(self.lattice.xy, self.lattice.BL, OmKv, None, None, fig=fig, ax=ax,
-                                      NL=self.lattice.NL, KL=self.lattice.KL,
-                                      PVx=self.lattice.PVx, PVy=self.lattice.PVy, climv=(np.min(OmKv), np.max(OmKv)),
-                                      axcb='auto', cbar_ax=cbar_ax, cbar_orientation='horizontal',
-                                      colorz=False, colormap='BlueBlackRed', bgcolor='#FFFFFF',
-                                      axis_off=axis_off, cax_label=r'$\Omega_k$')
+        climv = (np.min(OmKv), np.max(OmKv))
+        [ax, axcb] = netvis.movie_plot_2D(self.lattice.xy, self.lattice.BL, OmKv, None, None, fig=fig, ax=ax,
+                                          NL=self.lattice.NL, KL=self.lattice.KL,
+                                          PVx=self.lattice.PVx, PVy=self.lattice.PVy, climv=climv,
+                                          axcb='auto', cbar_ax=cbar_ax, cbar_orientation='horizontal',
+                                          colorz=False, colormap='BlueBlackRed', bgcolor='#FFFFFF',
+                                          axis_off=axis_off, cax_label=r'$\Omega_k$')
         # plt.show()
         # ax.scatter(self.lattice.xy[:, 0], self.lattice.xy[:, 1], c='k', edgecolors='none')
         ticks = [np.min(OmKv), np.max(OmKv)]
         print 'OmKv = ', OmKv
+        print 'BL = ', self.lattice.BL
         cbar_ax.xaxis.set_labelpad = -10
         axcb.set_ticks(ticks)
         plt.savefig(dio.prepdir(self.lp['meshfn']) + 'OmK' + self.lp['meshfn_exten'] + '.png', dpi=150)
@@ -2632,7 +2994,14 @@ class GyroLattice:
         ----------
         en : int
             The index of the eigenvalue to plot
+        eigval : complex array or None
+            The eigenvalues of the GyroLattice
+        eigvect : 2N x 2N complex array or None
+            The eigenvectors of the GyroLattice
+        ax : matplotlib axis instance or None
         plot_lat : bool
+            Whether to plot the lattice underneath the excitation
+        bwlw :
         **kwargs : keyword arguments for leplt.plot_eigvect_excitation()
             marker_num=0, black_t0lines=False, mark_t0=True, title='auto', normalization=1., alpha=0.6, lw=1, zorder=10,
             cmap='isolum_rainbow'
@@ -2645,7 +3014,7 @@ class GyroLattice:
             the handles for the plotted excitations, lines, dots, etc
         """
         if ax is None:
-            fig, ax = leplt.initialize_1panel_cbar_fig()
+            fig, ax, cbar = leplt.initialize_1panel_cbar_fig()
         else:
             fig = plt.gcf()
 
@@ -2676,7 +3045,7 @@ if __name__ == '__main__':
     import lepm.gyro_lattice_class_scripts as glatscripts
     import lepm.gyro_lattice_class_scripts_twistbc as glattwistscripts
     import lepm.gyro_lattice_class_scripts_twist2d as glattwist2dscripts
-    # check input arguments for timestamp (name of simulation is timestamp)
+    # check input arguments for lattice intitialization options and for what to do in the script
     parser = argparse.ArgumentParser(description='Create GyroLattice class instance,' +
                                                  ' with options to save or compute attributes of the class.')
     parser.add_argument('-rootdir', '--rootdir', help='Path to networks folder containing lattices/networks',
@@ -2688,6 +3057,9 @@ if __name__ == '__main__':
                         action='store_true')
     parser.add_argument('-plot_matrix', '--plot_matrix', help='Plot the dynamical matrix',
                         action='store_true')
+    parser.add_argument('-tune_junction', '--tune_junction',
+                        help='Increase coupling between junction of bonds and watch spectrum',
+                        action='store_true')
     parser.add_argument('-save_prpoly', '--save_prpoly',
                         help='Create dict and hist of excitation participation, grouped by polygonal contributions',
                         action='store_true')
@@ -2697,6 +3069,8 @@ if __name__ == '__main__':
                         action='store_true')
     parser.add_argument('-DOSmovie', '--make_DOSmovie', help='Load the gyro lattice and make DOS movie of normal modes',
                         action='store_true')
+    parser.add_argument('-amp', '--amplify', help='if DOSmovie, how large to scale up the normalization for eigvects',
+                        type=float, default=1.0)
     parser.add_argument('-save_lattice', '--save_lattice', help='Construct a network and save lattice and the physics',
                         action='store_true')
     parser.add_argument('-load_and_resave', '--load_lattice_resave_physics',
@@ -2706,6 +3080,13 @@ if __name__ == '__main__':
                         help='Compute localization of modes to the boundary and plot the fits', action='store_true')
     parser.add_argument('-ldos', '--load_calc_ldos', help='Compute local density of states', action='store_true')
     parser.add_argument('-gap_scaling', '--gap_scaling', help='Study scaling of the numerical gap', action='store_true')
+    parser.add_argument('-mode_scaling_tune_junction', '--mode_scaling_tune_junction',
+                        help='Study scaling of the band structure with a junction geometry', action='store_true')
+    parser.add_argument('-mode_scaling_tune_junction_kvecs', '--mode_scaling_tune_junction_kvecs',
+                        help='Study scaling of the band structure with a junction geometry', action='store_true')
+    parser.add_argument('-polygon_phases_tune_junction', '--polygon_phases_tune_junction',
+                        help='Study scaling of polygon phases for each eigvect with a junction geometry',
+                        action='store_true')
     parser.add_argument('-localization', '--localization', help='Seek exponential localization', action='store_true')
     parser.add_argument('-save_eig', '--save_eig', help='Save eigvect/val during get_localization', action='store_true')
     parser.add_argument('-save_images', '--save_images', help='Save movie for localization', action='store_true')
@@ -2761,8 +3142,11 @@ if __name__ == '__main__':
     parser.add_argument('-springax', '--twistmodes_springax',
                         help='If twistmodes_spiral, include a panel shoing the twisted bc rotating',
                         action='store_true')
+    parser.add_argument('-ylims', '--ylims', help='y limits for a plot', type=str, default='none')
     parser.add_argument('-edgelocalization', '--edgelocalization',
                         help='Check localization properties to the boundary of the sample', action='store_true')
+    parser.add_argument('-plot_OmK', '--plot_OmK', help='Visualize bond strengths', action='store_true')
+    parser.add_argument('-get_dirac', '--get_dirac', help='Text band extremum finding', action='store_true')
 
     # Geometry and physics arguments
     parser.add_argument('-Vpin', '--V0_pin_gauss',
@@ -2770,6 +3154,12 @@ if __name__ == '__main__':
                         type=float, default=0.0)
     parser.add_argument('-Vspr', '--V0_spring_gauss',
                         help='St.deviation of distribution of delta-correlated bond disorder',
+                        type=float, default=0.0)
+    parser.add_argument('-Vpinflat', '--V0_pin_flat',
+                        help='Width of flat distribution of delta-correlated pinning disorder',
+                        type=float, default=0.0)
+    parser.add_argument('-Vsprflat', '--V0_spring_flat',
+                        help='Width of flat distribution of delta-correlated bond disorder',
                         type=float, default=0.0)
     parser.add_argument('-N', '--N',
                         help='Mesh width AND height, in number of lattice spacings (leave blank to spec separate dims)',
@@ -2902,7 +3292,9 @@ if __name__ == '__main__':
     make_slit = args.make_slit
 
     print 'theta = ', theta
-    dcdisorder = args.V0_pin_gauss > 0 or args.V0_spring_gauss > 0
+    dcdisorder1 = args.V0_pin_gauss > 0 or args.V0_spring_gauss > 0
+    dcdisorder2 = args.V0_pin_flat > 0 or args.V0_spring_flat > 0
+    dcdisorder = dcdisorder1 or dcdisorder2
 
     lp = {'LatticeTop': args.LatticeTop,
           'shape': shape,
@@ -2941,6 +3333,8 @@ if __name__ == '__main__':
           'Omg': float((args.Omg).replace('n', '-').replace('p', '.')),
           'V0_pin_gauss': args.V0_pin_gauss,
           'V0_spring_gauss': args.V0_spring_gauss,
+          'V0_pin_flat': args.V0_pin_flat,
+          'V0_spring_flat': args.V0_spring_flat,
           'dcdisorder': dcdisorder,
           'percolation_density': args.percolation_density,
           'ABDelta': args.ABDelta,
@@ -2981,14 +3375,15 @@ if __name__ == '__main__':
         glat = GyroLattice(lat, lp)
         # glat.get_eigval_eigvect(attribute=True)
         glat.save_eigval_eigvect(attribute=True, save_png=True)
-        glat.infinite_dispersion(save=False, nkxvals=50, nkyvals=25)
+        glat.infinite_dispersion(save=True, nkxvals=50, nkyvals=25, save_plot=True)
 
     if args.dispersion_abtransition:
         """Example usage:
         python gyro_lattice_class.py -LT hexagonal -shape square -periodic -N 1 -disp_abtrans -basis psi
         python gyro_lattice_class.py -LT hexagonal -shape square -periodic_strip -NH 1 -NV 5 -disp_abtrans -basis psi
         """
-        glatscripts.dispersion_abtransition(lp)
+        glatscripts.dispersion_abtransition(lp, invert_bg=True, color_thres=2.15, nkxvals=100,
+                                            plot_positive_only=False, dab_step=0.05)
 
     if args.save_prpoly:
         meshfn = le.find_meshfn(lp)
@@ -3053,6 +3448,14 @@ if __name__ == '__main__':
         glat.save_DOSmovie()
 
     if args.make_DOSmovie:
+        '''Example usage:
+        python gyro_lattice_class.py -LT hucentroid_annulus -shape annulus -N 60 -alph 0.2 -DOSmovie -conf 3 -AB 0.6 -amp 4.0
+        python gyro_lattice_class.py -LT hucentroid -NP 50 -periodic -DOSmovie -save_eig -AB 0.6
+        python gyro_lattice_class.py -LT hucentroid -NP 50 -periodic -DOSmovie -save_eig -Vpin 0.3
+        python gyro_lattice_class.py -LT hucentroid -NP 50 -periodic -DOSmovie -save_eig -Vpin 0.6
+        python gyro_lattice_class.py -LT hucentroid -NP 50 -periodic -DOSmovie -save_eig -Vpin 0.9
+
+        '''
         meshfn = le.find_meshfn(lp)
         lp['meshfn'] = meshfn
         lat = lattice_class.Lattice(lp)
@@ -3061,7 +3464,18 @@ if __name__ == '__main__':
         print 'loading lattice...'
         glat.load()
         print 'Saving DOS movie...'
-        glat.save_DOSmovie()
+        # print 'glat.OmK = ', glat.OmK
+        # sys.exit()
+        # Set vmax_dos to be 1/L for periodic system
+        if lat.lp['periodicBC']:
+            extent = np.max(lat.xy[:, 0]) - np.min(lat.xy[:, 0])
+            print 'extent = ', extent
+            vmax_dos = 3. / (extent)
+            print 'vmax_dos = ', vmax_dos
+        else:
+            vmax_dos = 1.0
+
+        glat.save_DOSmovie(amplify=args.amplify, save_DOS_if_missing=args.save_eig, vmax_dos=vmax_dos)
 
     if args.save_ipr:
         '''Example usage
@@ -3096,6 +3510,11 @@ if __name__ == '__main__':
         # glat.save_DOSmovie()
 
     if args.save_lattice:
+        """
+        Examples
+        --------
+        python ./build/make_lattice.py -LT triangular -NH 1 -NV 1 -skip_polygons -skip_gyroDOS
+        """
         lat = lattice_class.Lattice(lp)
         print 'Building lattice...'
         lat.build()
@@ -3123,31 +3542,6 @@ if __name__ == '__main__':
 
     if args.gap_scaling:
         glatscripts.gap_scaling(lp, args)
-
-    if args.save_vpins:
-        '''Example usage:
-        python gyro_lattice_class.py -LT randorg_gammakick0p50_cent -periodic -shape square -spreading_time 0.3 -NP 2500 \
-            -N 50 -conf 1 -save_vpins -pin2hdf5 -Vpin 0.4
-        
-        
-        python run_series.py -pro gyro_lattice_class -opts LT/randorg_gammakick0p50_cent/-periodic/-shape/square/-spreading_time/0.3/-NP/2500/-N/50/-conf/1/-save_vpins/-pin2hdf5 -var Vpin 0.1:0.05:1.4
-        python run_series.py -pro gyro_lattice_class -opts LT/randorg_gammakick0p50_cent/-periodic/-shape/square/-spreading_time/0.3/-NP/2500/-N/50/-conf/2/-save_vpins/-pin2hdf5 -var Vpin 0.1:0.05:1.4
-        python run_series.py -pro gyro_lattice_class -opts LT/randorg_gammakick0p50_cent/-periodic/-shape/square/-spreading_time/0.3/-NP/2500/-N/50/-conf/3/-save_vpins/-pin2hdf5 -var Vpin 0.1:0.05:1.4
-        python run_series.py -pro gyro_lattice_class -opts LT/randorg_gammakick0p50_cent/-periodic/-shape/square/-spreading_time/0.3/-NP/2500/-N/50/-conf/4/-save_vpins/-pin2hdf5 -var Vpin 0.1:0.05:1.4
-        python run_series.py -pro gyro_lattice_class -opts LT/randorg_gammakick0p50_cent/-periodic/-shape/square/-spreading_time/0.3/-NP/2500/-N/50/-conf/5/-save_vpins/-pin2hdf5 -var Vpin 0.1:0.05:1.4
-        python run_series.py -pro gyro_lattice_class -opts LT/randorg_gammakick0p50_cent/-periodic/-shape/square/-spreading_time/0.3/-NP/2500/-N/50/-conf/6/-save_vpins/-pin2hdf5 -var Vpin 0.1:0.05:1.4
-        python run_series.py -pro gyro_lattice_class -opts LT/randorg_gammakick0p50_cent/-periodic/-shape/square/-spreading_time/0.3/-NP/2500/-N/50/-conf/7/-save_vpins/-pin2hdf5 -var Vpin 0.1:0.05:1.4
-        python run_series.py -pro gyro_lattice_class -opts LT/randorg_gammakick0p50_cent/-periodic/-shape/square/-spreading_time/0.3/-NP/2500/-N/50/-conf/8/-save_vpins/-pin2hdf5 -var Vpin 0.1:0.05:1.4
-        python run_series.py -pro gyro_lattice_class -opts LT/randorg_gammakick0p50_cent/-periodic/-shape/square/-spreading_time/0.3/-NP/2500/-N/50/-conf/9/-save_vpins/-pin2hdf5 -var Vpin 0.1:0.05:1.4
-        python run_series.py -pro gyro_lattice_class -opts LT/randorg_gammakick0p50_cent/-periodic/-shape/square/-spreading_time/0.3/-NP/2500/-N/50/-conf/10/-save_vpins/-pin2hdf5 -var Vpin 0.1:0.05:1.4
-        '''
-        lpmaster = copy.deepcopy(lp)
-        lat = lattice_class.Lattice(lpmaster)
-        lat.load()
-        for pconf in np.arange(11):
-            lp = copy.deepcopy(lpmaster)
-            lp['pinconf'] = pconf
-            glat = GyroLattice(lat, lp)
 
     if args.twistbcs:
         # Make sure bcs are periodic
@@ -3216,15 +3610,106 @@ if __name__ == '__main__':
 
     if args.twistmodes_spiral:
         """Example usage:
+        flux pumping 
         python gyro_lattice_class.py -LT hucentroid -shape square -periodic_strip -NH 50 -NV 30 -NP 50 \
             -twistmodes_spiral -startfreq 2.07
+
+        python gyro_lattice_class.py -LT hucentroid_annulus -shape annulus -N 60 -alph 0.2 \
+            -twistmodes_spiral -startfreq 2.5 -conf 3 -AB 0.6
+        
+        python gyro_lattice_class.py -LT hexagonal -shape annulus -N 10 -alph 0.2 \
+            -twistmodes_spiral -startfreq 2.5
+        
+        python gyro_lattice_class.py -LT hexagonal -shape annulus -N 10 -alph 0.2 \
+            -twistmodes_spiral -startfreq 2.5
+            
+        # Amorphous hucentroid small annuli
+        python ./build/make_lattice.py -LT hucentroid_annulus -shape annulus -N 10 -alph 0.0 -conf 3 -skip_polygon -skip_gyroDOS
+        python ./build/make_lattice.py -LT hucentroid_annulus -shape annulus -N 15 -alph 0.0 -conf 3 -skip_polygon -skip_gyroDOS
+        python ./build/make_lattice.py -LT hucentroid_annulus -shape annulus -N 25 -alph 0.0 -conf 3 -skip_polygon -skip_gyroDOS
+        python ./build/make_lattice.py -LT hucentroid_annulus -shape annulus -N 25 -alph 0.2 -skip_polygon -skip_gyroDOS
+        python ./build/make_lattice.py -LT hucentroid_annulus -shape annulus -N 25 -conf 2 -alph 0.2 -skip_polygon -skip_gyroDOS
+        python ./build/make_lattice.py -LT hucentroid_annulus -shape annulus -N 25 -conf 4 -alph 0.2 -skip_polygon -skip_gyroDOS
+        python gyro_lattice_class.py -LT hucentroid_annulus -shape annulus -N 25 -alph 0.0 \
+            -twistmodes_spiral -startfreq 2.2 -conf 1 -ylims 1.9/2.4 
+        python gyro_lattice_class.py -LT hucentroid_annulus -shape annulus -N 25 -alph 0.0 \
+            -twistmodes_spiral -startfreq 2.2 -conf 3 -ylims 1.9/2.4 
+        python gyro_lattice_class.py -LT hucentroid_annulus -shape annulus -N 10 -alph 0.0 \
+            -twistmodes_spiral -startfreq 2.2 -conf 3 -ylims 1.9/2.4 
+        python gyro_lattice_class.py -LT hucentroid_annulus -shape annulus -N 15 -alph 0.0 \
+            -twistmodes_spiral -startfreq 2.2 -conf 3 -ylims 1.9/2.4 
+        python gyro_lattice_class.py -LT hucentroid_annulus -shape annulus -N 20 -alph 0.0 \
+            -twistmodes_spiral -startfreq 2.2 -conf 3 -ylims 1.9/2.4 
+        
+        python gyro_lattice_class.py -LT hucentroid_annulus -shape annulus -N 30 -alph 0.2 \
+            -twistmodes_spiral -startfreq 2.2 -conf 1
+        python ./build/make_lattice.py -LT hucentroid_annulus -shape annulus -N 25 -alph 0.2 -skip_polygon -skip_gyroDOS
+        python gyro_lattice_class.py -LT hucentroid_annulus -shape annulus -N 25 -alph 0.2 \
+            -twistmodes_spiral -startfreq 2.2 -conf 1 -ylims 1.9/2.4 -nrungs 2
+        python gyro_lattice_class.py -LT hucentroid_annulus -shape annulus -N 25 -alph 0.2 \
+            -twistmodes_spiral -startfreq 2.2 -conf 2 -ylims 1.9/2.4 -nrungs 2
+        python gyro_lattice_class.py -LT hucentroid_annulus -shape annulus -N 25 -alph 0.2 \
+            -twistmodes_spiral -startfreq 2.2 -conf 3 -ylims 1.9/2.4 -nrungs 2
+        python gyro_lattice_class.py -LT hucentroid_annulus -shape annulus -N 25 -alph 0.2 \
+            -twistmodes_spiral -startfreq 2.2 -conf 4 -ylims 1.9/2.4 -nrungs 2
+        
+        # Amorphous iscentroid small annuli
+        python ./build/make_lattice.py -LT iscentroid_annulus -shape annulus -N 4 -alph 0.0 -skip_polygon -skip_gyroDOS
+        python ./build/make_lattice.py -LT iscentroid_annulus -shape annulus -N 5 -alph 0.0 -skip_polygon -skip_gyroDOS
+        python ./build/make_lattice.py -LT iscentroid_annulus -shape annulus -N 7 -alph 0.0 -skip_polygon -skip_gyroDOS
+        python ./build/make_lattice.py -LT iscentroid_annulus -shape annulus -N 6 -alph 0.15 -skip_polygon -skip_gyroDOS
+        python ./build/make_lattice.py -LT iscentroid_annulus -shape annulus -N 6 -alph 0.0 -skip_polygon -skip_gyroDOS
+        python ./build/make_lattice.py -LT iscentroid_annulus -shape annulus -N 7 -alph 0.15 -skip_polygon -skip_gyroDOS
+        python ./build/make_lattice.py -LT iscentroid_annulus -shape annulus -N 8 -alph 0.0 -skip_polygon -skip_gyroDOS
+        python gyro_lattice_class.py -LT iscentroid_annulus -shape annulus -N 5 -alph 0.0 \
+            -twistmodes_spiral -startfreq 2.22 -conf 1 -ylims 1.5/2.9 -nrungs 4
+        python gyro_lattice_class.py -LT iscentroid_annulus -shape annulus -N 6 -alph 0.15 \
+            -twistmodes_spiral -startfreq 2.1 -conf 1 -ylims 1.5/2.9 -nrungs 2
+        python gyro_lattice_class.py -LT iscentroid_annulus -shape annulus -N 4 -alph 0.0 \
+            -twistmodes_spiral -startfreq 2.25 -conf 1 -ylims 1.5/2.9 -nrungs 2
+        python gyro_lattice_class.py -LT iscentroid_annulus -shape annulus -N 7 -alph 0.0 \
+            -twistmodes_spiral -startfreq 2.1 -conf 1 -ylims 1.5/2.9 -nrungs 2
+        python gyro_lattice_class.py -LT iscentroid_annulus -shape annulus -N 5 -alph 0.0 \
+            -twistmodes_spiral -startfreq 2.25 -conf 1 -ylims 1.5/2.9 -nrungs 2
+                
+        # Amorphous iscentroid periodic strip
+        this doesn't seem to work well: python ./build/make_lattice.py -LT iscentroid -periodic_strip -NP 64 \
+                                            -skip_polygon -skip_gyroDOS -NH 64 -NH 10
+        python ./build/make_lattice.py -LT hucentroid -periodic_strip -NP 20 -NH 20 -NV 10 -skip_polygon -skip_gyroDOS -check
+        python gyro_lattice_class.py -LT hucentroid -periodic_strip -NP 20 -NH 20 -NV 10 -twistmodes_spiral -startfreq 2.2 -nrungs 1
+            
+        # Hexagonal small annuli 
+        python ./build/make_lattice.py -LT hexagonal -shape annulus -N 8 -alph 0.1 -skip_polygon -skip_gyroDOS
+        python ./build/make_lattice.py -LT hexagonal -shape annulus -N 20 -alph 0.2 -skip_polygon -skip_gyroDOS 
+        python gyro_lattice_class.py -LT hexagonal -shape annulus -N 5 -alph 0.1 -twistmodes_spiral -startfreq 2.0 -nrungs 1
+        python gyro_lattice_class.py -LT hexagonal -shape annulus -N 20 -alph 0.2 -twistmodes_spiral -startfreq 2.0 -nrungs 1
+        
+        # Use cylinder
+        python ./build/make_lattice.py -LT hexagonal -periodic_strip -NH 1 -NV 5 -skip_polygon -skip_gyroDOS   
+        python ./build/make_lattice.py -LT hexagonal -periodic_strip -NH 1 -NV 4 -skip_polygon -skip_gyroDOS    
+        python gyro_lattice_class.py -LT hexagonal -periodic_strip -NH 2 -NV 5 -twistmodes_spiral -startfreq 2.0 -nrungs 1
+        python gyro_lattice_class.py -LT hexagonal -periodic_strip -NH 2 -NV 4 -twistmodes_spiral -startfreq 2.0 -nrungs 1
+        
+        python gyro_lattice_class.py -LT hexagonal -periodic_strip -NH 1 -NV 5 -twistmodes_spiral -startfreq 2.0 -nrungs 1
+        python gyro_lattice_class.py -LT hexagonal -periodic_strip -NH 1 -NV 3 -twistmodes_spiral -startfreq 2.0 -nrungs 1
         """
         if args.twistmodes_thres0 < 0:
             thres0 = None
         else:
             thres0 = args.twistmodes_thres0
+
+        # if lp['LatticeTop'] == 'hexagonal':
+        #     ylims = [1.9, 2.7]
+        # else:
+        #     ylims = [2.0, 2.35]
+        if args.ylims is not 'none':
+            ylims = sf.string_sequence_to_numpy_array(args.ylims, dtype=float)
+        else:
+            ylims = None
+
         glattwistscripts.twistmodes_spiral(lp, nrungs=args.twistmodes_nrungs, startfreq=args.twistmodes_startfreq,
-                                           springsubplot=args.twistmodes_springax, thres0=thres0)
+                                           springsubplot=args.twistmodes_springax, thres0=thres0,
+                                           numnearby=1, nthetavals=81, ylims=ylims, normalization=2.)
 
     if args.edgelocalization:
         """Example usage
@@ -3289,3 +3774,138 @@ if __name__ == '__main__':
     # plt.ylabel('ipr')
     # plt.xlabel(r'$\omega$')
     # plt.show()
+
+    if args.tune_junction:
+        '''Increase the coupling between a triad of bonds and visualize evolution of spectrum. To tune the dispersion,
+        see kchern_gyro_collection.py
+
+        Example network creation
+        python ./build/make_lattice.py -LT hexjunctiontriad -alph 0.1 -periodic
+
+        Example usage:
+        python gyro_lattice_class.py -LT hexjunctiontriad -tune_junction -N 1 -OmKspec unionn0p00in0p1000 -alph 0.1
+
+        '''
+        if lp['LatticeTop'] == 'hexjunctiontriad':
+            kvals = -np.linspace(0., 10., 100)
+            dist_thres = lp['OmKspec'].split('union')[-1].split('in')[-1]
+            lpmaster = copy.deepcopy(lp)
+            eigvals = []
+
+            for kval in kvals:
+                lp = copy.deepcopy(lpmaster)
+                lp['OmKspec'] = 'union' + sf.float2pstr(kval, ndigits=3) + 'in' + dist_thres
+                lat = lattice_class.Lattice(lp)
+                lat.load()
+                glat = GyroLattice(lat, lp)
+                eigval = glat.get_eigval()
+                eigvals.append(np.imag(eigval).tolist())
+
+            print 'eigvals = ', eigvals
+            eigvals = np.vstack(eigvals)
+            print 'np.shape(eigvals)= ', np.shape(eigvals)
+            fig, ax = leplt.initialize_1panel_centered_fig()
+            ax.plot(-kvals, eigvals)
+            ax.set_ylim(0, 4)
+            ax.set_ylabel('frequency, $\omega$')
+            ax.set_xlabel('coupling constant, $k$')
+            ax.set_title('Junction spectrum')
+            fn = 'junction_spectrum_OmKspec_union_maxk_' + sf.float2pstr(np.max(kval)) + '.pdf'
+            plt.savefig(dio.prepdir(lat.lp['meshfn']) + fn)
+            plt.show()
+        else:
+            raise RuntimeError('Have not coded for this lattice topology yet')
+
+    if args.mode_scaling_tune_junction:
+        """Watch the nth eigenmode as the bond strength is varied in a junction network.
+        Note that this tracks the mode to ensure it is the same one through band crossings.
+
+        Example usage
+        python gyro_lattice_class.py -mode_scaling_tune_junction -LT hexjunction2triads -N 1 \
+            -OmKspec union0p000in0p100 -alph 0.1 -periodic
+
+        python gyro_lattice_class.py -mode_scaling_tune_junction -LT spindle -N 2 -OmKspec union0p000in0p100 \
+            -alph 0.0 -periodic -aratio 0.1
+
+        """
+        glatscripts.mode_scaling_tune_junction(lp, args, nmode=None)
+
+    if args.polygon_phases_tune_junction:
+        """Watch the phase differences in polygons of the nth eigenmode as the bond strength is varied in a junction
+        network.
+        Note that this tracks the mode to ensure it is the same one through band crossings.
+        (Works best with a bit of disorder)
+
+        Example usage
+        python gyro_lattice_class.py -polygon_phases_tune_junction -LT hexjunction2triads -N 1 \
+            -OmKspec union0p000in0p100 -alph 0.1 -periodic
+        python gyro_lattice_class.py -polygon_phases_tune_junction -LT spindle -N 2 -OmKspec union0p000in0p100 \
+            -alph 0.0 -periodic -aratio 0.1
+        """
+        glatscripts.polygon_phases_tune_junction(lp, args, nmode=None)
+
+    if args.mode_scaling_tune_junction_kvecs:
+        """Watch the every n eigenmode as the bond strength is varied in a junction network,
+        for some series of k vectors --> finish this!!
+
+        Example usage
+        python gyro_lattice_class.py -mode_scaling_tune_junction_kvecs -LT hexjunction2triads -N 1 \
+            -OmKspec union0p000in0p100 -alph 0.1 -periodic
+
+        python gyro_lattice_class.py -mode_scaling_tune_junction_kvecs -LT spindle -N 2 -OmKspec union0p000in0p100 \
+            -alph 0.0 -periodic -aratio 0.1
+
+        """
+        glatscripts.mode_scaling_tune_junction_kvecs(lp, args, nskip=5)
+
+    if args.save_vpins:
+        '''Example usage:
+        python gyro_lattice_class.py -LT randorg_gammakick0p50_cent -periodic -shape square -spreading_time 0.3 -NP 2500 \
+            -N 50 -conf 1 -save_vpins -pin2hdf5 -Vpin 0.4
+
+
+        python run_series.py -pro gyro_lattice_class -opts LT/randorg_gammakick0p50_cent/-periodic/-shape/square/-spreading_time/0.3/-NP/2500/-N/50/-conf/1/-save_vpins/-pin2hdf5 -var Vpin 0.1:0.05:1.4
+        python run_series.py -pro gyro_lattice_class -opts LT/randorg_gammakick0p50_cent/-periodic/-shape/square/-spreading_time/0.3/-NP/2500/-N/50/-conf/2/-save_vpins/-pin2hdf5 -var Vpin 0.1:0.05:1.4
+        python run_series.py -pro gyro_lattice_class -opts LT/randorg_gammakick0p50_cent/-periodic/-shape/square/-spreading_time/0.3/-NP/2500/-N/50/-conf/3/-save_vpins/-pin2hdf5 -var Vpin 0.1:0.05:1.4
+        python run_series.py -pro gyro_lattice_class -opts LT/randorg_gammakick0p50_cent/-periodic/-shape/square/-spreading_time/0.3/-NP/2500/-N/50/-conf/4/-save_vpins/-pin2hdf5 -var Vpin 0.1:0.05:1.4
+        python run_series.py -pro gyro_lattice_class -opts LT/randorg_gammakick0p50_cent/-periodic/-shape/square/-spreading_time/0.3/-NP/2500/-N/50/-conf/5/-save_vpins/-pin2hdf5 -var Vpin 0.1:0.05:1.4
+        python run_series.py -pro gyro_lattice_class -opts LT/randorg_gammakick0p50_cent/-periodic/-shape/square/-spreading_time/0.3/-NP/2500/-N/50/-conf/6/-save_vpins/-pin2hdf5 -var Vpin 0.1:0.05:1.4
+        python run_series.py -pro gyro_lattice_class -opts LT/randorg_gammakick0p50_cent/-periodic/-shape/square/-spreading_time/0.3/-NP/2500/-N/50/-conf/7/-save_vpins/-pin2hdf5 -var Vpin 0.1:0.05:1.4
+        python run_series.py -pro gyro_lattice_class -opts LT/randorg_gammakick0p50_cent/-periodic/-shape/square/-spreading_time/0.3/-NP/2500/-N/50/-conf/8/-save_vpins/-pin2hdf5 -var Vpin 0.1:0.05:1.4
+        python run_series.py -pro gyro_lattice_class -opts LT/randorg_gammakick0p50_cent/-periodic/-shape/square/-spreading_time/0.3/-NP/2500/-N/50/-conf/9/-save_vpins/-pin2hdf5 -var Vpin 0.1:0.05:1.4
+        python run_series.py -pro gyro_lattice_class -opts LT/randorg_gammakick0p50_cent/-periodic/-shape/square/-spreading_time/0.3/-NP/2500/-N/50/-conf/10/-save_vpins/-pin2hdf5 -var Vpin 0.1:0.05:1.4
+        '''
+        lpmaster = copy.deepcopy(lp)
+        lat = lattice_class.Lattice(lpmaster)
+        lat.load()
+        for pconf in np.arange(11):
+            lp = copy.deepcopy(lpmaster)
+            lp['pinconf'] = pconf
+            glat = GyroLattice(lat, lp)
+
+    if args.plot_OmK:
+        '''Visualize the bond strengths, save an image of the network with bonds colored by strength in meshfn
+
+        Example usage:
+        python gyro_lattice_class.py -plot_OmK -LT hexjunctiontriad -N 1 -OmKspec unionn0p000in0p200 -alph 0.1 -periodic
+        '''
+        meshfn = le.find_meshfn(lp)
+        lp['meshfn'] = meshfn
+        lat = lattice_class.Lattice(lp)
+        lat.load()
+        glat = GyroLattice(lat, lp)
+        glat.plot_OmK()
+
+    if args.get_dirac:
+        """Test band extremum finding
+        Example usage:
+        python gyro_lattice_class.py -get_dirac -N 1 -periodic -basis psi
+        
+        NOTE: It is better to get corners of BZ instead for certain configurations
+        bz = lat_tmp.get_bz()
+        """
+        lat = lattice_class.Lattice(lp)
+        lat.load()
+        glat = GyroLattice(lat, lp)
+        kpt = glat.get_kpt_at_band_extremum(minmax='max', band=0, guess=[2., 0.], bounds=((0, 5), (0, 5)))
+        print 'kpt = ', kpt
